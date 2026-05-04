@@ -1,0 +1,43 @@
+name: "scrfd"
+platform: "tensorrt_plan"
+max_batch_size: 16
+
+input [
+  {
+    name: "input"
+    data_type: TYPE_FP32
+    format: FORMAT_NCHW
+    dims: [ 3, 640, 640 ]
+  }
+]
+
+output [
+  {
+    name: "scores"
+    data_type: TYPE_FP32
+    dims: [ -1 ]
+  },
+  {
+    name: "bboxes"
+    data_type: TYPE_FP32
+    dims: [ -1, 4 ]
+  },
+  {
+    name: "keypoints"
+    data_type: TYPE_FP32
+    dims: [ -1, 10 ]
+  }
+]
+
+dynamic_batching {
+  max_queue_delay_microseconds: 2000
+  preferred_batch_size: [ 4, 8, 16 ]
+}
+
+instance_group [
+  {
+    kind: KIND_GPU
+    gpus: [ 0 ]
+    count: 1
+  }
+]

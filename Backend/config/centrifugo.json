@@ -1,0 +1,30 @@
+{
+  "admin": true,
+  "admin_password": "admin",
+  "admin_secret": "admin-secret-change-in-production",
+  "api_key": "${CENTRIFUGO_API_KEY}",
+  "token_hmac_secret_key": "${CENTRIFUGO_TOKEN_SECRET}",
+  "allowed_origins": ["http://localhost:3000", "https://the-airco.net"],
+  "namespaces": [
+    {
+      "name": "tenant",
+      "history_size": 1,
+      "history_ttl": "60s",
+      "recover": true
+    },
+    {
+      "name": "sessions",
+      "presence": true,
+      "join_leave": true,
+      "history_size": 100,
+      "history_ttl": "300s",
+      "recover": true
+    },
+    {
+      "name": "alerts",
+      "history_size": 50,
+      "history_ttl": "600s",
+      "recover": true
+    }
+  ]
+}

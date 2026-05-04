@@ -1,0 +1,70 @@
+{
+  "catalog_version": 1,
+  "description": "Production model catalog for Airco Secure V2. This is the source of truth for supported analytics models, their runtime names, artifact requirements, and source asset provenance.",
+  "models": [
+    {
+      "id": "yolov8_person",
+      "runtime_model_name": "yolov8_person",
+      "purpose": "Primary full-frame person detection for session analytics.",
+      "artifact": {
+        "repository_path": "v2/services/savant-pipeline/models/yolov8_person/1",
+        "required_file": "yolov8n.onnx",
+        "format": "onnx"
+      },
+      "source": {
+        "status": "external-download-required",
+        "kind": "ultralytics",
+        "reference": "yolov8n.pt",
+        "notes": "Canonical export input is Ultralytics YOLOv8n person detector. Savant owns the detector ONNX artifact and DeepStream must build or consume the runtime engine using its own TensorRT version."
+      }
+    },
+    {
+      "id": "yolov8_phone",
+      "runtime_model_name": "yolov8_phone",
+      "purpose": "Phone detection around tracked persons.",
+      "artifact": {
+        "repository_path": "v2/services/savant-pipeline/models/yolov8_phone/1",
+        "required_file": "best.onnx",
+        "format": "onnx"
+      },
+      "source": {
+        "status": "available-in-repo",
+        "kind": "custom-yolo",
+        "reference": "models/phone_usage_detection/best.pt",
+        "notes": "Legacy V1-trained phone detector retained as the current source asset until a new model registry replaces it. Savant owns the detector ONNX artifact and DeepStream must build or consume the runtime engine using its own TensorRT version."
+      }
+    },
+    {
+      "id": "arcface",
+      "runtime_model_name": "arcface",
+      "purpose": "Face embedding generation for employee recognition.",
+      "artifact": {
+        "repository_path": "v2/services/triton/models/arcface/1",
+        "required_file": "model.plan",
+        "format": "tensorrt_plan"
+      },
+      "source": {
+        "status": "export-at-build-time",
+        "kind": "insightface",
+        "reference": "insightface buffalo_l / w600k_r50.onnx",
+        "notes": "The checked-in backend/models/arcface_r100.onnx may be absent or stale in local checkouts. V2 export refreshes the canonical ArcFace source from InsightFace buffalo_l before building the TensorRT artifact."
+      }
+    },
+    {
+      "id": "osnet",
+      "runtime_model_name": "osnet",
+      "purpose": "Body re-identification embeddings for cross-camera identity continuity.",
+      "artifact": {
+        "repository_path": "v2/services/triton/models/osnet/1",
+        "required_file": "model.plan",
+        "format": "tensorrt_plan"
+      },
+      "source": {
+        "status": "export-at-build-time",
+        "kind": "torchreid",
+        "reference": "osnet_x1_0 pretrained weights",
+        "notes": "No committed static source artifact exists in-repo today. Export currently depends on torchreid downloading pretrained weights during the export step."
+      }
+    }
+  ]
+}

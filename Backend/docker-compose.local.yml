@@ -1,0 +1,351 @@
+# Local development compose — no nginx, no frontend container, no portainer.
+# Run frontend separately: cd ../frontend && npm run dev
+#
+# Modes:
+#   docker compose -f docker-compose.local.yml up                   → infra + API
+#   docker compose -f docker-compose.local.yml --profile gpu up     → local-lite GPU flow (person detection only)
+#   docker compose -f docker-compose.local.yml --profile gpu-full up → full GPU stack for artifact-complete servers
+
+x-shared-env: &shared-env
+  POSTGRES_HOST: timescaledb
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: airco
+  POSTGRES_USER: airco
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-localdev}
+  REDIS_URL: redis://redis:6379/0
+  MINIO_ENDPOINT: minio:9000
+  MINIO_PUBLIC_URL: ${PUBLIC_MINIO_URL:-http://127.0.0.1:9000}
+  MINIO_PUBLIC_PRESIGN: ${MINIO_PUBLIC_PRESIGN:-false}
+  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-airco}
+  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-localdev}
+  MINIO_BUCKET: airco-evidence
+  CENTRIFUGO_API_URL: http://centrifugo:8088/api
+  CENTRIFUGO_API_KEY: ${CENTRIFUGO_API_KEY:-localdev-centrifugo-api-key-0123456789}
+  CENTRIFUGO_TOKEN_SECRET: ${CENTRIFUGO_TOKEN_SECRET:-localdev-centrifugo-token-secret-0123456789}
+  TRITON_URL: triton:8001
+  TENANT_ID: ${TENANT_ID:-default}
+  SUPABASE_URL: ${SUPABASE_URL}
+  SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
+  SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+  SESSION_SECRET: ${SESSION_SECRET:-localdev-session-secret-0123456789}
+  SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-airco_session}
+  SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-604800}
+  SESSION_SECURE_COOKIE: ${SESSION_SECURE_COOKIE:-false}
+  SESSION_SAME_SITE: ${SESSION_SAME_SITE:-lax}
+
+services:
+  # ── Infrastructure ───────────────────────────────────────
+
+  timescaledb:
+    image: timescale/timescaledb-ha:pg16
+    environment:
+      POSTGRES_DB: airco
+      POSTGRES_USER: airco
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-localdev}
+    ports:
+      - "5432:5432"
+    volumes:
+      - timescaledb_data:/home/postgres/pgdata/data
+      - ./config/timescaledb/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airco"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-airco}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-localdev}
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-airco}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-localdev}
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $$MINIO_ACCESS_KEY $$MINIO_SECRET_KEY &&
+      mc mb --ignore-existing local/airco-evidence &&
+      mc anonymous set download local/airco-evidence &&
+      echo 'MinIO bucket ready'
+      "
+    restart: "no"
+
+  centrifugo:
+    image: centrifugo/centrifugo:v5
+    ports:
+      - "8088:8088"
+    volumes:
+      - ./config/centrifugo.json:/centrifugo/config.json
+    command: centrifugo -c config.json --port 8088
+    environment:
+      CENTRIFUGO_API_KEY: ${CENTRIFUGO_API_KEY:-localdev-centrifugo-api-key-0123456789}
+      CENTRIFUGO_TOKEN_HMAC_SECRET_KEY: ${CENTRIFUGO_TOKEN_SECRET:-localdev-centrifugo-token-secret-0123456789}
+
+  go2rtc:
+    image: alexxit/go2rtc:latest
+    ports:
+      - "1984:1984"
+      - "8555:8555"
+      - "8556:8556"
+    volumes:
+      - ./config/go2rtc.yml:/config/go2rtc.yaml
+
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    ports:
+      - "8554:8554"
+      - "8888:8888"
+    environment:
+      MTX_PROTOCOLS: tcp
+
+  # ── Application API ──────────────────────────────────────
+
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      <<: *shared-env
+      GO2RTC_URL: http://go2rtc:1984
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── GPU Services (./local.sh --gpu) ─────────────────────
+
+  triton:
+    profiles: [gpu-full]
+    image: nvcr.io/nvidia/tritonserver:24.08-py3
+    ports:
+      - "8001:8001"
+      - "8002:8002"
+    volumes:
+      - ./services/triton/models:/models
+    command: tritonserver --model-repository=/models --model-control-mode=explicit --load-model=arcface --load-model=osnet --strict-model-config=false --exit-on-error=false
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/v2/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  identity-consumer:
+    profiles: [gpu-full]
+    build:
+      context: .
+      dockerfile: services/identity-consumer/Dockerfile
+    environment:
+      <<: *shared-env
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      triton:
+        condition: service_healthy
+
+  analytics-consumer:
+    profiles: [gpu, gpu-full]
+    build:
+      context: .
+      dockerfile: services/analytics-consumer/Dockerfile
+    environment:
+      <<: *shared-env
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  snapshot-consumer:
+    profiles: [gpu, gpu-full]
+    build:
+      context: .
+      dockerfile: services/snapshot-consumer/Dockerfile
+    environment:
+      <<: *shared-env
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  session-control:
+    profiles: [gpu, gpu-full]
+    build:
+      context: .
+      dockerfile: services/session-control/Dockerfile
+    environment:
+      <<: *shared-env
+      GO2RTC_URL: http://go2rtc:1984
+    depends_on:
+      redis:
+        condition: service_healthy
+      go2rtc:
+        condition: service_started
+      api:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "from pathlib import Path; raise SystemExit(0 if Path('/tmp/session-control-ready').exists() else 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  ws-publisher:
+    profiles: [gpu, gpu-full]
+    build:
+      context: .
+      dockerfile: services/ws-publisher/Dockerfile
+    environment:
+      <<: *shared-env
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  ultimate-adapter:
+    profiles: [gpu, gpu-full]
+    build:
+      context: .
+      dockerfile: services/ultimate-adapter/Dockerfile
+    environment:
+      <<: *shared-env
+      GO2RTC_RTSP_BASE_URL: rtsp://go2rtc:8556
+      ULTIMATE_DET_MODEL_PATH: /ultimate-poc/yolo11s.pt
+      ULTIMATE_REID_MODEL_PATH: ${ULTIMATE_REID_MODEL_PATH:-/ultimate-poc/osnet_x1_0_msmt17.pth}
+      ULTIMATE_DEVICE: ${ULTIMATE_DEVICE:-cuda:0}
+    volumes:
+      - ${ULTIMATE_POC_PATH:-../Ultimate-Tracker}:/ultimate-poc:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      redis:
+        condition: service_healthy
+      session-control:
+        condition: service_healthy
+      api:
+        condition: service_started
+
+  savant-pipeline:
+    profiles: [gpu-full]
+    build:
+      context: ./services/savant-pipeline
+      dockerfile: Dockerfile
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      <<: *shared-env
+      ZMQ_SRC_ENDPOINT: router+bind:tcp://0.0.0.0:5000
+      ZMQ_SINK_ENDPOINT: ""
+      USE_SCRFD: ${USE_SCRFD:-true}
+      SCRFD_ONNX_PATH: /models/scrfd/det_10g.onnx
+    volumes:
+      - ./services/savant-pipeline:/opt/savant/module
+      - ./services/savant-pipeline/models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      redis:
+        condition: service_healthy
+      session-control:
+        condition: service_healthy
+
+  savant-feeder:
+    profiles: [gpu, gpu-full]
+    build:
+      context: .
+      dockerfile: services/savant-feeder/Dockerfile
+    environment:
+      <<: *shared-env
+      GO2RTC_RTSP_BASE_URL: rtsp://go2rtc:8556
+      ZMQ_SRC_ENDPOINT: dealer+connect:tcp://savant-pipeline:5000
+      FEEDER_FPS: "4"
+    depends_on:
+      redis:
+        condition: service_healthy
+      session-control:
+        condition: service_healthy
+      savant-pipeline:
+        condition: service_started
+
+  savant-pipeline-lite:
+    profiles: [gpu]
+    build:
+      context: ./services/savant-pipeline
+      dockerfile: Dockerfile
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      <<: *shared-env
+      ZMQ_SRC_ENDPOINT: ""
+      ZMQ_SINK_ENDPOINT: ""
+    volumes:
+      - ./services/savant-pipeline:/opt/savant/module
+      - ./services/savant-pipeline/module.local.yml:/opt/savant/module/module.yml:ro
+      - ./services/savant-pipeline/models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      redis:
+        condition: service_healthy
+      session-control:
+        condition: service_healthy
+
+volumes:
+  timescaledb_data:
+  redis_data:
+  minio_data:
