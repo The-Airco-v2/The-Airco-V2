@@ -79,6 +79,18 @@ def test_delete_employee_route_exists_and_returns_no_content(api_client, db_sess
     assert response.content == b""
 
 
+def test_delete_employee_enrollment_data_route_exists_and_returns_no_content(api_client, db_session_mock):
+    employee_id = uuid.uuid4()
+    db_session_mock.execute.return_value = scalar_one_result(
+        SimpleNamespace(id=employee_id, tenant_id="default", name="Nikhil")
+    )
+
+    response = api_client.delete(f"/api/v2/employees/{employee_id}/enrollment-data")
+
+    assert response.status_code == 204
+    assert response.content == b""
+
+
 def test_enroll_employee_accepts_file_field(api_client, db_session_mock):
     employee_id = uuid.uuid4()
     db_session_mock.add = lambda _: None

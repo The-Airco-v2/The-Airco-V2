@@ -18,9 +18,8 @@ docker build \
   -t "$IMAGE_NAME" \
   "$ROOT"
 
-docker run --rm --gpus all \
-  -v "$ROOT:/workspace" \
+MSYS_NO_PATHCONV=1 docker run --rm --gpus all \
+  -v "$DIR:/workspace" \
   -w /workspace \
   "$IMAGE_NAME" \
-  python v2/scripts/export_tensorrt.py "$@"
-
+  python3 /workspace/scripts/export_tensorrt.py "$@"

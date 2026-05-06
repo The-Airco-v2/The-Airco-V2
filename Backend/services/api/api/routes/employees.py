@@ -1,18 +1,26 @@
-"""Employee CRUD + face enrollment."""
+"""Employee CRUD + face enrollment/training."""
 
 from __future__ import annotations
 
-import inspect
 import uuid
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select, func
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from airco.db import get_session
-from airco.models import Employee, EmployeeFaceTemplate
+from airco.models import Employee, EmployeeFaceTemplate, EmployeeFaceTrainingJob
+from airco.minio_client import delete_employee_face, delete_object
 from api.auth import AuthState, require_authenticated, require_admin
+from api.face_training_service import (
+    FaceTrainingCancelResponse,
+    FaceTrainingStartRequest,
+    FaceTrainingStatusResponse,
+    cancel_face_training_job,
+    get_face_training_status,
+    start_face_training_job,
+)
 
 router = APIRouter()
 
@@ -35,12 +43,12 @@ async def _enrollment_status(db: AsyncSession, employee_id: uuid.UUID) -> str:
     result = await db.execute(
         select(func.count())
         .select_from(EmployeeFaceTemplate)
-        .where(EmployeeFaceTemplate.employee_id == employee_id)
+        .where(
+            EmployeeFaceTemplate.employee_id == employee_id,
+            EmployeeFaceTemplate.is_active == True,
+        )
     )
-    scalar = getattr(result, "scalar_one_or_none", None) or getattr(result, "scalar_one", None)
-    template_count = scalar() if callable(scalar) else 0
-    if inspect.isawaitable(template_count):
-        template_count = await template_count
+    template_count = result.scalar_one()
     return "trained" if (template_count or 0) > 0 else "untrained"
 
 
@@ -59,6 +67,86 @@ def _normalize_angle_label(angle: str) -> str:
     return {
         "front": "frontal",
     }.get(angle, angle)
+
+
+async def _cleanup_employee_enrollment_data(
+    *,
+    db: AsyncSession,
+    tenant_id: str,
+    employee_id: uuid.UUID,
+) -> None:
+    """Cancel active face training and delete all enrollment artifacts for an employee."""
+    job_result = await db.execute(
+        select(EmployeeFaceTrainingJob).where(
+            EmployeeFaceTrainingJob.employee_id == employee_id,
+            EmployeeFaceTrainingJob.tenant_id == tenant_id,
+            EmployeeFaceTrainingJob.status.in_(["capturing", "processing"]),
+        )
+    )
+    active_jobs = job_result.scalars().all()
+    if active_jobs:
+        try:
+            await cancel_face_training_job(tenant_id=tenant_id, employee_id=employee_id)
+        except Exception:
+            pass
+
+    export_result = await db.execute(
+        select(EmployeeFaceTrainingJob.export_object_name).where(
+            EmployeeFaceTrainingJob.employee_id == employee_id,
+            EmployeeFaceTrainingJob.tenant_id == tenant_id,
+            EmployeeFaceTrainingJob.export_object_name.is_not(None),
+        )
+    )
+    for (export_object_name,) in export_result.all():
+        if export_object_name:
+            try:
+                delete_object(export_object_name)
+            except Exception:
+                pass
+
+    templates_result = await db.execute(
+        select(EmployeeFaceTemplate).where(
+            EmployeeFaceTemplate.employee_id == employee_id,
+            EmployeeFaceTemplate.sample_image_object_name.is_not(None),
+        )
+    )
+    templates = templates_result.scalars().all()
+    for template in templates:
+        if template.sample_image_object_name:
+            try:
+                delete_employee_face(template.sample_image_object_name)
+            except Exception:
+                pass
+
+    await db.execute(
+        delete(EmployeeFaceTrainingJob).where(
+            EmployeeFaceTrainingJob.employee_id == employee_id,
+            EmployeeFaceTrainingJob.tenant_id == tenant_id,
+        )
+    )
+    await db.execute(
+        delete(EmployeeFaceTemplate).where(
+            EmployeeFaceTemplate.employee_id == employee_id,
+        )
+    )
+
+
+async def _load_employee(
+    *,
+    db: AsyncSession,
+    tenant_id: str,
+    employee_id: uuid.UUID,
+) -> Employee:
+    result = await db.execute(
+        select(Employee).where(
+            Employee.id == employee_id,
+            Employee.tenant_id == tenant_id,
+        )
+    )
+    employee = result.scalar_one_or_none()
+    if employee is None:
+        raise HTTPException(404, "Employee not found")
+    return employee
 
 
 class EnrollmentQuality(BaseModel):
@@ -120,73 +208,63 @@ async def delete_employee(
     auth: AuthState = Depends(require_admin),
     db: AsyncSession = Depends(get_session),
 ):
-    result = await db.execute(
-        select(Employee).where(
-            Employee.id == employee_id,
-            Employee.tenant_id == auth.tenant_id,
-        )
-    )
-    emp = result.scalar_one_or_none()
-    if not emp:
-        raise HTTPException(404, "Employee not found")
-    await db.delete(emp)
+    employee = await _load_employee(db=db, tenant_id=auth.tenant_id, employee_id=employee_id)
+    await _cleanup_employee_enrollment_data(db=db, tenant_id=auth.tenant_id, employee_id=employee_id)
+    await db.delete(employee)
     await db.commit()
 
 
-@router.post("/{employee_id}/enroll")
-async def enroll_face(
+@router.delete("/{employee_id}/enrollment-data", status_code=204)
+async def delete_employee_enrollment(
     employee_id: uuid.UUID,
-    angle: str = "frontal",
-    file: UploadFile | None = File(default=None),
-    image: UploadFile | None = File(default=None),
     auth: AuthState = Depends(require_admin),
     db: AsyncSession = Depends(get_session),
 ):
-    """Upload a face image for enrollment. Generates embedding via Triton."""
-    # Verify employee exists
     result = await db.execute(
         select(Employee).where(
             Employee.id == employee_id,
             Employee.tenant_id == auth.tenant_id,
         )
     )
-    emp = result.scalar_one_or_none()
-    if not emp:
+    employee = result.scalar_one_or_none()
+    if employee is None:
         raise HTTPException(404, "Employee not found")
 
-    upload = file or image
-    if upload is None:
-        raise HTTPException(422, "Enrollment image is required")
-
-    # Read image
-    image_bytes = await upload.read()
-
-    # Generate embedding via Triton (in production)
-    # For now, store a placeholder — the actual Triton call will be:
-    #   import tritonclient.grpc.aio as grpcclient
-    #   from PIL import Image
-    #   import numpy as np, io
-    #   img = Image.open(io.BytesIO(image_bytes)).resize((112, 112))
-    #   img_np = np.array(img, dtype=np.float32).transpose(2, 0, 1)[np.newaxis] / 255.0
-    #   triton = grpcclient.InferenceServerClient(url=settings.triton_url)
-    #   inp = grpcclient.InferInput("input", img_np.shape, "FP32")
-    #   inp.set_data_from_numpy(img_np)
-    #   result = await triton.infer("arcface", [inp])
-    #   embedding = result.as_numpy("output").flatten().tolist()
-
-    import numpy as np
-    embedding = np.random.randn(512).tolist()  # placeholder until Triton is available
-
-    template = EmployeeFaceTemplate(
-        employee_id=employee_id,
-        embedding=embedding,
-        angle_label=_normalize_angle_label(angle),
-        quality_score=0.9,
-    )
-    db.add(template)
+    await _cleanup_employee_enrollment_data(db=db, tenant_id=auth.tenant_id, employee_id=employee_id)
     await db.commit()
 
-    return {"status": "enrolled", "angle": angle, "employee_id": str(employee_id)}
+
+@router.get("/{employee_id}/face-training/status", response_model=FaceTrainingStatusResponse)
+async def face_training_status(
+    employee_id: uuid.UUID,
+    auth: AuthState = Depends(require_authenticated),
+):
+    return await get_face_training_status(tenant_id=auth.tenant_id, employee_id=employee_id)
+
+
+@router.post("/{employee_id}/face-training/start", response_model=FaceTrainingStatusResponse)
+async def face_training_start(
+    employee_id: uuid.UUID,
+    body: FaceTrainingStartRequest,
+    auth: AuthState = Depends(require_admin),
+):
+    return await start_face_training_job(
+        tenant_id=auth.tenant_id,
+        employee_id=employee_id,
+        camera_id=body.camera_id,
+        replace_existing=body.replace_existing,
+        target_frames=body.target_frames,
+        duration_seconds=body.duration_seconds,
+        debug_mode=body.debug_mode,
+    )
+
+
+@router.post("/{employee_id}/face-training/cancel", response_model=FaceTrainingCancelResponse)
+async def face_training_cancel(
+    employee_id: uuid.UUID,
+    auth: AuthState = Depends(require_admin),
+):
+    return await cancel_face_training_job(tenant_id=auth.tenant_id, employee_id=employee_id)
 
 
 @router.get("/{employee_id}/enrollment-quality", response_model=EnrollmentQuality)

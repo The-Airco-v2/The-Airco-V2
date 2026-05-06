@@ -126,6 +126,37 @@ class EmployeeFaceTemplate(Base):
     capture_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     version: Mapped[int] = mapped_column(Integer, default=1)
+    sample_image_object_name: Mapped[str | None] = mapped_column(Text, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class EmployeeFaceTrainingJob(Base):
+    __tablename__ = "employee_face_training_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"), index=True)
+    camera_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("cameras.id"), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="capturing")
+    progress: Mapped[int] = mapped_column(Integer, default=0)
+    captured_frames: Mapped[int] = mapped_column(Integer, default=0)
+    accepted_frames: Mapped[int] = mapped_column(Integer, default=0)
+    rejected_frames: Mapped[int] = mapped_column(Integer, default=0)
+    target_frames: Mapped[int] = mapped_column(Integer, default=100)
+    duration_seconds: Mapped[int] = mapped_column(Integer, default=120)
+    replace_existing: Mapped[bool] = mapped_column(Boolean, default=False)
+    debug_mode: Mapped[bool] = mapped_column(Boolean, default=False)
+    angle_coverage: Mapped[dict | None] = mapped_column(JSONB, default=dict)
+    export_object_name: Mapped[str | None] = mapped_column(Text, default=None)
+    error_message: Mapped[str | None] = mapped_column(Text, default=None)
+    detector_face_count: Mapped[int] = mapped_column(Integer, default=0)
+    detector_confidence: Mapped[float | None] = mapped_column(Float, default=None)
+    detector_bbox: Mapped[list | None] = mapped_column(JSONB, default=None)
+    rejection_reason: Mapped[str | None] = mapped_column(String(64), default=None)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

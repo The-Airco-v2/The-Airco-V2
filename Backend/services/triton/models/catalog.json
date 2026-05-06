@@ -30,7 +30,7 @@
       "source": {
         "status": "available-in-repo",
         "kind": "custom-yolo",
-        "reference": "models/phone_usage_detection/best.pt",
+        "reference": "Backend/Triton Models/phone_detections/best.pt",
         "notes": "Legacy V1-trained phone detector retained as the current source asset until a new model registry replaces it. Savant owns the detector ONNX artifact and DeepStream must build or consume the runtime engine using its own TensorRT version."
       }
     },

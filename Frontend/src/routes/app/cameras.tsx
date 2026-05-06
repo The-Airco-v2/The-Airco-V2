@@ -1,5 +1,5 @@
-import { Camera as CameraIcon, Plus, Trash2, Upload } from "lucide-react";
-import { useRef, useState } from "react";
+import { Camera as CameraIcon, Maximize2, Plus, Trash2, Upload, Wifi } from "lucide-react";
+import { useState, useRef } from "react";
 import { PageHeader } from "@/components/shared/PageHeader";
 import { StatusBadge } from "@/components/shared/StatusBadge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -14,6 +14,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -30,6 +31,91 @@ const emptyForm: CreateCameraPayload = {
   is_entrance: false,
 };
 
+const GO2RTC_BASE = "/webrtc";
+
+function playerUrl(streamName: string): string {
+  return `${GO2RTC_BASE}/stream.html?src=${encodeURIComponent(streamName)}`;
+}
+
+function CameraTile({
+  camera,
+  onClick,
+}: {
+  camera: NonNullable<ReturnType<typeof useCameras>["data"]>[number];
+  onClick: () => void;
+}) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(e) => e.key === "Enter" && onClick()}
+      className="group relative aspect-video cursor-pointer overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950 transition-colors hover:border-zinc-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
+      aria-label={`Open live feed: ${camera.name}`}
+    >
+      <iframe
+        src={playerUrl(camera.stream_name)}
+        className="h-full w-full border-0"
+        style={{ pointerEvents: "none" }}
+        allow="autoplay"
+        title={camera.name}
+      />
+
+      <div className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-0 transition-opacity group-hover:opacity-100">
+        <div className="rounded-full bg-black/60 p-3">
+          <Maximize2 className="h-6 w-6 text-white" />
+        </div>
+      </div>
+
+      <div className="pointer-events-none absolute bottom-0 left-0 right-0 flex items-center justify-between bg-gradient-to-t from-black/80 to-transparent px-3 py-2">
+        <p className="truncate text-sm font-medium text-white drop-shadow">{camera.name}</p>
+        <StatusBadge
+          status={camera.status === "online" ? "online" : "offline"}
+          className="shrink-0 text-[10px]"
+        />
+      </div>
+    </div>
+  );
+}
+
+function StreamModal({ camera, onClose }: { camera: NonNullable<ReturnType<typeof useCameras>["data"]>[number] | null; onClose: () => void; }) {
+  return (
+    <Dialog open={!!camera} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-5xl gap-0 border-zinc-800 bg-zinc-950 p-0">
+        <DialogHeader className="sr-only">
+          <DialogTitle>{camera ? `Live feed: ${camera.name}` : "Live feed"}</DialogTitle>
+          <DialogDescription>
+            {camera
+              ? `Fullscreen live stream for ${camera.name}. Close the dialog to return to Camera Manager.`
+              : "Fullscreen live stream dialog."}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="relative aspect-video w-full bg-black">
+          {camera && (
+            <iframe
+              src={playerUrl(camera.stream_name)}
+              className="h-full w-full border-0"
+              allow="autoplay"
+              title={`Live feed: ${camera.name}`}
+            />
+          )}
+        </div>
+        <div className="flex items-center justify-between border-t border-zinc-800 px-5 py-3">
+          <div>
+            <p className="font-medium text-zinc-100">{camera?.name}</p>
+            <p className="mt-0.5 text-xs text-zinc-500">
+              {camera?.location && camera?.zone
+                ? `${camera.location} · ${camera.zone}`
+                : camera?.location || camera?.zone || "No location set"}
+            </p>
+          </div>
+          <StatusBadge status={camera?.status === "online" ? "online" : "offline"} />
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export default function CamerasPage() {
   const { data: cameras, isLoading, error } = useCameras();
   const createCamera = useCreateCamera();
@@ -39,6 +125,7 @@ export default function CamerasPage() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [form, setForm] = useState<CreateCameraPayload>(emptyForm);
   const [importing, setImporting] = useState(false);
+  const [activeCamera, setActiveCamera] = useState<NonNullable<ReturnType<typeof useCameras>["data"]>[number] | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleCreate = async () => {
@@ -117,8 +204,8 @@ export default function CamerasPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Cameras"
-        description={cameras ? `${cameras.length} camera${cameras.length !== 1 ? "s" : ""} configured` : ""}
+        title="Camera Manager"
+        description={cameras ? `${cameras.length} camera${cameras.length !== 1 ? "s" : ""} configured` : "Manage cameras and watch live feeds in one place."}
         actions={
           <div className="flex items-center gap-2">
             <input
@@ -148,6 +235,45 @@ export default function CamerasPage() {
           </div>
         }
       />
+
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-zinc-100">Live Feeds</h2>
+            <p className="text-xs text-zinc-500">Preview any camera stream directly from Camera Manager.</p>
+          </div>
+          <div className="flex items-center gap-2 text-xs text-zinc-500">
+            <Wifi className="h-3.5 w-3.5" />
+            Real-time view
+          </div>
+        </div>
+
+        {error && (
+          <Alert variant="destructive" className="mb-4 border-red-800 bg-red-950/40">
+            <AlertDescription className="text-red-300">Failed to load live cameras.</AlertDescription>
+          </Alert>
+        )}
+
+        {isLoading ? (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <Skeleton key={i} className="aspect-video w-full rounded-xl bg-zinc-800" />
+            ))}
+          </div>
+        ) : !cameras?.length ? (
+          <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-zinc-800 bg-zinc-950 py-16">
+            <Wifi className="mb-3 h-10 w-10 text-zinc-700" />
+            <p className="text-sm text-zinc-500">No cameras configured</p>
+            <p className="mt-1 text-xs text-zinc-600">Add cameras below to see live feeds here.</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {cameras.map((cam) => (
+              <CameraTile key={cam.id} camera={cam} onClick={() => setActiveCamera(cam)} />
+            ))}
+          </div>
+        )}
+      </div>
 
       {error && (
         <Alert variant="destructive" className="border-red-800 bg-red-950/40">
@@ -297,6 +423,8 @@ export default function CamerasPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <StreamModal camera={activeCamera} onClose={() => setActiveCamera(null)} />
     </div>
   );
 }
