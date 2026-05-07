@@ -89,10 +89,20 @@ export interface CreateEmployeePayload {
   department: string;
 }
 
-export type FaceTrainingState = "idle" | "capturing" | "processing" | "completed" | "failed" | "cancelled";
+export type FaceTrainingState =
+  | "idle"
+  | "capturing"
+  | "uploading"
+  | "embedding_processing"
+  | "processing"
+  | "completed"
+  | "failed"
+  | "cancelled";
 
 export interface FaceTrainingStartPayload {
   camera_id: string;
+  camera_name: string;
+  employee_name: string;
   replace_existing?: boolean;
   target_frames?: number;
   duration_seconds?: number;
@@ -109,6 +119,8 @@ export interface FaceTrainingStatus {
   progress: number;
   captured_frames: number;
   accepted_frames: number;
+  uploaded_frames: number;
+  embedded_frames: number;
   rejected_frames: number;
   target_frames: number;
   duration_seconds: number;
@@ -131,6 +143,38 @@ export interface FaceTrainingCancelResponse {
   job_id: string | null;
   state: FaceTrainingState;
   message: string;
+}
+
+export interface SystemHealthResponse {
+  triton: {
+    status: "online" | "offline" | "degraded";
+    models_ready: string[];
+    models_unready: string[];
+  };
+  minio: { status: "online" | "offline" };
+  postgresql: { status: "online" | "offline" };
+  embedding_workers: {
+    active: number;
+    queue_depth: number;
+    worker_registry: Record<string, string>;
+  };
+}
+
+export interface FaceTrainingMetricsResponse {
+  queue_depth: number;
+  workers_active: number;
+  average_embedding_ms: number;
+  images_uploaded: number;
+  embeddings_completed: number;
+  worker_registry: Record<string, string>;
+}
+
+export interface FaceTrainingPreviewResponse {
+  job_id: string;
+  current_face_image: string | null;
+  last_accepted_image: string | null;
+  last_rejected_image: string | null;
+  rejection_reason: string | null;
 }
 
 export interface Session {

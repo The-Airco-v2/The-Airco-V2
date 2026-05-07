@@ -155,7 +155,7 @@ services:
       - "8002:8002"
     volumes:
       - ./services/triton/models:/models
-    command: tritonserver --model-repository=/models --model-control-mode=explicit --load-model=arcface --load-model=osnet --load-model=scrfd --strict-model-config=false --exit-on-error=false
+    command: tritonserver --model-repository=/models --model-control-mode=explicit --load-model=yolo26 --load-model=phone_detection --load-model=yolo26-pose --load-model=arcface --load-model=osnet --load-model=scrfd --strict-model-config=false --exit-on-error=false
     deploy:
       resources:
         reservations:
@@ -250,8 +250,7 @@ services:
     environment:
       <<: *shared-env
       GO2RTC_RTSP_BASE_URL: rtsp://go2rtc:8556
-      ULTIMATE_DET_MODEL_PATH: /ultimate-poc/yolo11s.pt
-      ULTIMATE_REID_MODEL_PATH: ${ULTIMATE_REID_MODEL_PATH:-/ultimate-poc/osnet_x1_0_msmt17.pth}
+      ULTIMATE_DET_MODEL_PATH: yolo26
       ULTIMATE_DEVICE: ${ULTIMATE_DEVICE:-cuda:0}
     volumes:
       - ${ULTIMATE_POC_PATH:-../Ultimate-Tracker}:/ultimate-poc:ro

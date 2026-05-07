@@ -7,23 +7,37 @@ import contextlib
 import logging
 import os
 import pickle
+import re
 import time
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 import cv2
 import numpy as np
+from PIL import Image
 from fastapi import HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+import tritonclient.grpc.aio as grpcclient
+from tritonclient.grpc import InferInput, InferRequestedOutput
 
 from airco.config import settings
 from airco.db import async_session
-from airco.minio_client import upload_bytes, upload_employee_face
+from airco.minio_client import EMPLOYEE_BUCKET_NAME, get_minio, upload_employee_asset, upload_employee_face
 from airco.models import Camera, Employee, EmployeeFaceTemplate, EmployeeFaceTrainingJob
+from api.face_training_observability import (
+    record_accepted_face_preview,
+    record_current_face_preview,
+    record_embedding_timing,
+    record_image_uploaded,
+    record_rejected_face_preview,
+    record_rejected_preview_object,
+    reset_job_runtime_state,
+    set_queue_depth,
+    set_worker_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,16 +54,26 @@ LIGHT_LOW_THRESHOLD     = 20.0
 LIGHT_HIGH_THRESHOLD    = 245.0
 DUPLICATE_SIM_THRESHOLD = 0.80
 MAX_PER_ANGLE           = 25
+FACE_CROP_MARGIN        = 0.06
 
-SCRFD_MODEL_PATH = Path("/models/scrfd/det_10g.onnx")
 SCRFD_INPUT_SIZE = 640
 SCRFD_SCORE_THRESHOLD = 0.45
 SCRFD_NMS_THRESHOLD = 0.4
+SCRFD_EXPECTED_OUTPUTS = 9
+SCRFD_MAX_FACE_AREA_RATIO = 0.6
+SCRFD_MIN_ASPECT_RATIO = 0.3
+SCRFD_MAX_ASPECT_RATIO = 3.0
 EMBEDDING_WORKERS = 3
 TRAINING_QUEUE_SIZE = 12
 PROGRESS_COMMIT_FRAME_INTERVAL = 10
 PROGRESS_COMMIT_SECONDS = 2.0
-SCRFD_SESSION: Any | None = None
+TRITON_URL = settings.triton_url
+TRITON_TIMEOUT_SECONDS = 5.0
+SCRFD_TRITON_MODEL_NAME = "scrfd"
+TRITON_CLIENT = grpcclient.InferenceServerClient(url=TRITON_URL)
+SCRFD_TRITON_IO_NAMES: tuple[str, list[str]] | None = None
+ARCFACE_INPUT_NAME = "input"
+ARCFACE_OUTPUT_NAME = "output"
 
 ARCFACE_REF_POINTS = np.array(
     [[38.2946, 51.6963], [73.5318, 51.5014], [56.0252, 71.7366],
@@ -60,6 +84,8 @@ ARCFACE_REF_POINTS = np.array(
 
 class FaceTrainingStartRequest(BaseModel):
     camera_id: uuid.UUID
+    camera_name: str
+    employee_name: str
     replace_existing: bool = False
     target_frames: int = DEFAULT_TARGET_FRAMES
     duration_seconds: int = DEFAULT_DURATION_SECONDS
@@ -76,8 +102,11 @@ class FaceTrainingStatusResponse(BaseModel):
     progress: int
     captured_frames: int
     accepted_frames: int
+    uploaded_frames: int
+    embedded_frames: int
     rejected_frames: int
     target_frames: int
+    remaining_frames: int
     duration_seconds: int
     replace_existing: bool
     debug_mode: bool
@@ -130,39 +159,51 @@ async def _read_frame(cap: cv2.VideoCapture) -> tuple[bool, np.ndarray | None]:
 
 # ── SCRFD detector ───────────────────────────────────────────────────────────
 
-def _valid_onnx(path: Path) -> bool:
-    if not path.exists() or path.stat().st_size < 1024:
-        return False
-    try:
-        header = path.read_bytes()[:128]
-    except OSError:
-        return False
-    if b"git-lfs.github.com/spec/v1" in header:
-        return False
-    try:
-        import onnx; onnx.load(path); return True
-    except ImportError:
-        return header.startswith(b"\x08") and b"input" in header
-    except Exception:
-        return False
+async def _scrfd_triton_io_names() -> tuple[str, list[str]]:
+    global SCRFD_TRITON_IO_NAMES
+    if SCRFD_TRITON_IO_NAMES is not None:
+        return SCRFD_TRITON_IO_NAMES
+
+    metadata = await asyncio.wait_for(
+        TRITON_CLIENT.get_model_metadata(model_name=SCRFD_TRITON_MODEL_NAME),
+        timeout=TRITON_TIMEOUT_SECONDS,
+    )
+    if not metadata.inputs:
+        raise RuntimeError("SCRFD Triton model has no declared inputs")
+    if not metadata.outputs:
+        raise RuntimeError("SCRFD Triton model has no declared outputs")
+
+    input_name = metadata.inputs[0].name
+    output_names = [output.name for output in metadata.outputs]
+    SCRFD_TRITON_IO_NAMES = (input_name, output_names)
+    return SCRFD_TRITON_IO_NAMES
 
 
-def _ensure_scrfd() -> Any | None:
-    global SCRFD_SESSION
-    if SCRFD_SESSION is not None:
-        return SCRFD_SESSION
-    if not _valid_onnx(SCRFD_MODEL_PATH):
-        logger.warning("SCRFD model missing/invalid: %s", SCRFD_MODEL_PATH)
-        return None
-    import onnxruntime as ort
-    for providers in (["CUDAExecutionProvider", "CPUExecutionProvider"], ["CPUExecutionProvider"]):
-        try:
-            SCRFD_SESSION = ort.InferenceSession(str(SCRFD_MODEL_PATH), providers=providers)
-            logger.info("SCRFD loaded (%s)", providers[0])
-            return SCRFD_SESSION
-        except Exception as exc:
-            logger.warning("SCRFD load failed (%s): %s", providers[0], exc)
-    return None
+async def _infer_scrfd_triton(image: np.ndarray) -> list[np.ndarray]:
+    input_name, output_names = await _scrfd_triton_io_names()
+
+    input_tensor = image.astype(np.float32)
+    infer_input = InferInput(input_name, input_tensor.shape, "FP32")
+    infer_input.set_data_from_numpy(input_tensor)
+
+    outputs = [InferRequestedOutput(name) for name in output_names]
+    response = await asyncio.wait_for(
+        TRITON_CLIENT.infer(
+            model_name=SCRFD_TRITON_MODEL_NAME,
+            inputs=[infer_input],
+            outputs=outputs,
+        ),
+        timeout=TRITON_TIMEOUT_SECONDS,
+    )
+    if len(output_names) != SCRFD_EXPECTED_OUTPUTS:
+        raise RuntimeError(
+            f"SCRFD output count mismatch: expected {SCRFD_EXPECTED_OUTPUTS}, got {len(output_names)}"
+        )
+
+    tensors = [response.as_numpy(name) for name in output_names]
+    if any(tensor is None for tensor in tensors):
+        raise RuntimeError("SCRFD Triton response missing one or more output tensors")
+    return [tensor for tensor in tensors if tensor is not None]
 
 
 def _decode_scrfd(outputs: list[np.ndarray], det_size: int = SCRFD_INPUT_SIZE) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -204,14 +245,30 @@ def _nms(boxes: np.ndarray, scores: np.ndarray, thresh: float = SCRFD_NMS_THRESH
     return keep
 
 
-def _detect_scrfd(frame: np.ndarray) -> list[dict[str, Any]]:
-    sess = _ensure_scrfd()
-    if sess is None:
-        return []
+def _is_face_like_bbox(bbox: list[float], frame_shape: tuple) -> bool:
+    x1, y1, x2, y2 = (float(v) for v in bbox)
+    bw, bh = x2 - x1, y2 - y1
+    if bw < FACE_MIN_SIZE_PX or bh < FACE_MIN_SIZE_PX:
+        return False
+    fh, fw = frame_shape[:2]
+    frame_area = float(max(fw * fh, 1))
+    area_ratio = (bw * bh) / frame_area
+    if area_ratio > SCRFD_MAX_FACE_AREA_RATIO:
+        return False
+    aspect = bw / max(bh, 1e-6)
+    if aspect < SCRFD_MIN_ASPECT_RATIO or aspect > SCRFD_MAX_ASPECT_RATIO:
+        return False
+    return True
+
+
+async def _detect_scrfd(frame: np.ndarray) -> list[dict[str, Any]]:
     h, w = frame.shape[:2]
     inp = cv2.resize(frame, (SCRFD_INPUT_SIZE, SCRFD_INPUT_SIZE)).astype(np.float32).transpose(2,0,1)[np.newaxis]
     try:
-        scores, bboxes, kps = _decode_scrfd(sess.run(None, {sess.get_inputs()[0].name: inp}))
+        outputs = await _infer_scrfd_triton(inp)
+        scores, bboxes, kps = _decode_scrfd(outputs)
+    except RuntimeError:
+        raise
     except Exception as exc:
         logger.warning("SCRFD inference failed: %s", exc); return []
     if not len(scores):
@@ -221,6 +278,9 @@ def _detect_scrfd(frame: np.ndarray) -> list[dict[str, Any]]:
     for idx in _nms(bboxes, scores):
         b = bboxes[idx]
         bbox = [max(0., b[0]*sx), max(0., b[1]*sy), min(float(w), b[2]*sx), min(float(h), b[3]*sy)]
+        # Temporarily disabled face-like bbox filter for debugging
+        # if not _is_face_like_bbox(bbox, frame.shape):
+        #     continue
         if (bbox[2]-bbox[0]) < FACE_MIN_SIZE_PX or (bbox[3]-bbox[1]) < FACE_MIN_SIZE_PX:
             continue
         k = kps[idx].reshape(5, 2); k[:,0] *= sx; k[:,1] *= sy
@@ -235,13 +295,16 @@ def _detect_haar(frame: np.ndarray) -> list[dict[str, Any]]:
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     out = []
     for x, y, w, h in cascade.detectMultiScale(gray, 1.05, 3, minSize=(24, 24)):
-        if w >= FACE_MIN_SIZE_PX and h >= FACE_MIN_SIZE_PX:
-            out.append({"bbox": [float(x), float(y), float(x+w), float(y+h)], "score": 0.5, "keypoints": None})
+        bbox = [float(x), float(y), float(x + w), float(y + h)]
+        # Temporarily disabled face-like bbox filter for debugging
+        # if _is_face_like_bbox(bbox, frame.shape):
+        out.append({"bbox": [float(x), float(y), float(x+w), float(y+h)], "score": 0.5, "keypoints": None})
     return sorted(out, key=lambda d: (d["bbox"][2]-d["bbox"][0])*(d["bbox"][3]-d["bbox"][1]), reverse=True)
 
 
-def _detect(frame: np.ndarray) -> list[dict[str, Any]]:
-    return _detect_scrfd(frame) or _detect_haar(frame)
+async def _detect(frame: np.ndarray) -> list[dict[str, Any]]:
+    detections = await _detect_scrfd(frame)
+    return detections or _detect_haar(frame)
 
 
 def _best_detection(detections: list[dict[str, Any]], frame_shape: tuple) -> dict[str, Any] | None:
@@ -251,7 +314,7 @@ def _best_detection(detections: list[dict[str, Any]], frame_shape: tuple) -> dic
     cx, cy = fw / 2.0, fh / 2.0
     return max(detections, key=lambda d: (
         d.get("score", 0.0),
-        (d["bbox"][2]-d["bbox"][0]) * (d["bbox"][3]-d["bbox"][1]),
+        -((d["bbox"][2]-d["bbox"][0]) * (d["bbox"][3]-d["bbox"][1])),
         -abs((d["bbox"][0]+d["bbox"][2])/2 - cx) - abs((d["bbox"][1]+d["bbox"][3])/2 - cy),
     ))
 
@@ -267,13 +330,30 @@ def _align(img: np.ndarray, kps: np.ndarray, size: tuple[int,int] = (112,112)) -
 
 
 def _crop(frame: np.ndarray, bbox: list[float], margin: float = 0.18) -> np.ndarray:
+    x1, y1, x2, y2 = _crop_bounds(frame, bbox, margin=margin)
+    return frame[y1:y2, x1:x2].copy()
+
+
+def _crop_bounds(frame: np.ndarray, bbox: list[float], margin: float = 0.18) -> tuple[int, int, int, int]:
     x1, y1, x2, y2 = bbox
     w, h = x2 - x1, y2 - y1
     fh, fw = frame.shape[:2]
-    return frame[
-        max(0, int(y1 - h*margin)) : min(fh, int(y2 + h*margin)),
-        max(0, int(x1 - w*margin)) : min(fw, int(x2 + w*margin)),
-    ].copy()
+    left = max(0, int(x1 - w * margin))
+    top = max(0, int(y1 - h * margin))
+    right = min(fw, int(x2 + w * margin))
+    bottom = min(fh, int(y2 + h * margin))
+    if right <= left:
+        right = min(fw, left + 1)
+    if bottom <= top:
+        bottom = min(fh, top + 1)
+    return left, top, right, bottom
+
+
+def _jpeg_bytes(image: np.ndarray) -> bytes:
+    ok, encoded = cv2.imencode(".jpg", image)
+    if not ok:
+        raise RuntimeError("Failed to encode preview image")
+    return encoded.tobytes()
 
 
 def _quality(face: np.ndarray) -> tuple[float, float, float]:
@@ -301,6 +381,76 @@ def _normalize_bbox(bbox: list[float], shape: tuple) -> list[float]:
     return [max(0., min(1., v / (fw if i % 2 == 0 else fh))) for i, v in enumerate(bbox)]
 
 
+def _object_segment(value: str) -> str:
+    segment = re.sub(r"[^a-zA-Z0-9]+", "_", value).strip("_").lower()
+    return segment or "unknown"
+
+
+def _sample_object_name(employee_name: str, camera_name: str, job_id: uuid.UUID, sample_index: int) -> str:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    employee_segment = _object_segment(employee_name)
+    camera_segment = _object_segment(camera_name)
+    return f"{employee_segment}/{camera_segment}/{job_id}/{timestamp}-{sample_index:06d}.jpg"
+
+
+def _download_employee_face_bytes(object_name: str) -> bytes:
+    client = get_minio()
+    response = client.get_object(EMPLOYEE_BUCKET_NAME, object_name)
+    try:
+        return response.read()
+    finally:
+        response.close()
+        response.release_conn()
+
+
+def _image_ahash(image: np.ndarray) -> int:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    small = cv2.resize(gray, (8, 8), interpolation=cv2.INTER_AREA)
+    mean = float(small.mean())
+    value = 0
+    for bit in (small > mean).flatten():
+        value = (value << 1) | int(bool(bit))
+    return value
+
+
+def _is_duplicate_hash(candidate_hash: int, seen_hashes: list[int], *, threshold: int = 6) -> bool:
+    return any((candidate_hash ^ existing_hash).bit_count() <= threshold for existing_hash in seen_hashes)
+
+
+def _is_occluded_detection(detection: dict[str, Any], frame_shape: tuple) -> bool:
+    bbox = detection.get("bbox")
+    if not bbox:
+        return True
+    fh, fw = frame_shape[:2]
+    x1, y1, x2, y2 = (float(v) for v in bbox)
+    if x1 <= 1.0 or y1 <= 1.0 or x2 >= float(fw) - 1.0 or y2 >= float(fh) - 1.0:
+        return True
+    keypoints = detection.get("keypoints")
+    if keypoints is None:
+        return False
+    pts = np.asarray(keypoints, dtype=np.float32).reshape(-1, 2)
+    margin = max(4.0, min(x2 - x1, y2 - y1) * 0.08)
+    return bool(
+        np.any(pts[:, 0] <= x1 + margin)
+        or np.any(pts[:, 0] >= x2 - margin)
+        or np.any(pts[:, 1] <= y1 + margin)
+        or np.any(pts[:, 1] >= y2 - margin)
+    )
+
+
+def _phase_progress(phase: str, approved: int, embedded: int, target: int) -> int:
+    target = max(target, 1)
+    if phase == "embedding_processing":
+        return int(min(100, 50 + round(embedded / target * 50)))
+    if phase in {"capturing", "uploading"}:
+        return int(min(50, round(approved / target * 50)))
+    if phase == "completed":
+        return 100
+    if phase == "cancelled":
+        return 0
+    return int(min(100, round(approved / target * 100)))
+
+
 def _progress(accepted: int, target: int) -> int:
     return int(min(100, round(accepted / max(target, 1) * 100)))
 
@@ -319,29 +469,59 @@ _json_safe_value = _json_safe
 def _is_stale_scrfd_error(msg: str | None) -> bool:
     if not msg: return False
     n = msg.lower()
-    return any(x in n for x in ("invalid_protobuf", "protobuf parsing failed",
-                                 "scrfd model is missing", "scrfd detector load failed"))
+    return any(
+        x in n
+        for x in (
+            "invalid_protobuf",
+            "protobuf parsing failed",
+            "scrfd model is missing",
+            "scrfd detector load failed",
+            "missinggreenlet",
+            "greenlet_spawn",
+            "pendingrollbackerror",
+            "await_only",
+            "invalid transaction",
+        )
+    )
 
-def _log_training_rejection(job: Any, *, frame_index: int, reason: str, detail: str | None = None) -> None:
+def _log_training_rejection(job_id: uuid.UUID, *, frame_index: int, reason: str, detail: str | None = None) -> None:
     extra = f" detail={detail}" if detail else ""
-    logger.info("Training rejection job=%s frame=%d reason=%s%s", job.id, frame_index, reason, extra)
+    logger.info("Training rejection job=%s frame=%d reason=%s%s", job_id, frame_index, reason, extra)
 
 
-def _log_training_debug(job: Any, *, frame_index: int, face_count: int, confidence: float | None, bbox: list[float] | None) -> None:
-    logger.debug("Training debug job=%s frame=%d faces=%d conf=%s bbox=%s", job.id, frame_index, face_count, confidence, bbox)
+def _log_training_debug(job_id: uuid.UUID, *, frame_index: int, face_count: int, confidence: float | None, bbox: list[float] | None) -> None:
+    logger.debug("Training debug job=%s frame=%d faces=%d conf=%s bbox=%s", job_id, frame_index, face_count, confidence, bbox)
+
+
+async def _assert_triton_models_ready() -> None:
+    for model_name in (SCRFD_TRITON_MODEL_NAME, "arcface"):
+        ready = await asyncio.wait_for(
+            TRITON_CLIENT.is_model_ready(model_name=model_name),
+            timeout=TRITON_TIMEOUT_SECONDS,
+        )
+        if not ready:
+            raise RuntimeError(f"Triton model is not READY: {model_name}")
 
 
 # ── ArcFace embedding ─────────────────────────────────────────────────────────
 
 async def _embed(face: np.ndarray) -> list[float]:
-    import tritonclient.grpc.aio as grpc
-    from PIL import Image
-    arr = np.asarray(Image.fromarray(cv2.cvtColor(face, cv2.COLOR_BGR2RGB)).resize((112, 112)),
-                     dtype=np.float32).transpose(2, 0, 1)[np.newaxis] / 255.0
-    client = grpc.InferenceServerClient(url=settings.triton_url)
-    inp = grpc.InferInput("input", arr.shape, "FP32")
+    arr = np.asarray(Image.fromarray(cv2.cvtColor(face, cv2.COLOR_BGR2RGB)).resize((112, 112)), dtype=np.float32)
+    arr = arr.transpose(2, 0, 1)[np.newaxis] / 255.0
+    inp = InferInput(ARCFACE_INPUT_NAME, arr.shape, "FP32")
     inp.set_data_from_numpy(arr)
-    return (await client.infer("arcface", [inp])).as_numpy("output").flatten().tolist()
+    response = await asyncio.wait_for(
+        TRITON_CLIENT.infer(
+            "arcface",
+            [inp],
+            outputs=[InferRequestedOutput(ARCFACE_OUTPUT_NAME)],
+        ),
+        timeout=TRITON_TIMEOUT_SECONDS,
+    )
+    output = response.as_numpy(ARCFACE_OUTPUT_NAME)
+    if output is None:
+        raise RuntimeError("ArcFace Triton response missing output tensor")
+    return output.flatten().tolist()
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
@@ -357,16 +537,20 @@ async def _active_job(db: AsyncSession, employee_id: uuid.UUID) -> EmployeeFaceT
     r = await db.execute(
         select(EmployeeFaceTrainingJob).where(
             EmployeeFaceTrainingJob.employee_id == employee_id,
-            EmployeeFaceTrainingJob.status.in_(("capturing", "processing")),
+            EmployeeFaceTrainingJob.status.in_(("capturing", "uploading", "embedding_processing", "processing")),
         ).order_by(EmployeeFaceTrainingJob.created_at.desc()).limit(1)
     )
     return r.scalar_one_or_none()
 
 
-async def _set_state(db: AsyncSession, job: EmployeeFaceTrainingJob, **fields: Any) -> None:
-    for k, v in fields.items():
-        setattr(job, k, v)
-    job.updated_at = fields.get("updated_at", datetime.now(timezone.utc))
+async def _set_state(db: AsyncSession, job_id: uuid.UUID, **fields: Any) -> None:
+    values = dict(fields)
+    values["updated_at"] = fields.get("updated_at", datetime.now(timezone.utc))
+    await db.execute(
+        update(EmployeeFaceTrainingJob)
+        .where(EmployeeFaceTrainingJob.id == job_id)
+        .values(**values)
+    )
     await db.commit()
 
 
@@ -391,6 +575,13 @@ async def _update_progress(
     await db.commit()
 
 
+async def _job_cancel_requested(db: AsyncSession, job_id: uuid.UUID) -> bool:
+    r = await db.execute(
+        select(EmployeeFaceTrainingJob.cancel_requested).where(EmployeeFaceTrainingJob.id == job_id)
+    )
+    return bool(r.scalar_one_or_none())
+
+
 async def _latest_template_version(db: AsyncSession, employee_id: uuid.UUID) -> int:
     r = await db.execute(
         select(EmployeeFaceTemplate.version).where(EmployeeFaceTemplate.employee_id == employee_id)
@@ -404,7 +595,9 @@ def _idle_response(employee: Employee) -> FaceTrainingStatusResponse:
         job_id=None, employee_id=employee.id, employee_name=employee.name,
         camera_id=None, camera_name=None, state="idle", progress=0,
         captured_frames=0, accepted_frames=0, rejected_frames=0,
+        uploaded_frames=0, embedded_frames=0,
         target_frames=DEFAULT_TARGET_FRAMES, duration_seconds=DEFAULT_DURATION_SECONDS,
+        remaining_frames=DEFAULT_TARGET_FRAMES,
         replace_existing=False, debug_mode=False,
         angle_coverage={l: 0 for l in ANGLE_LABELS},
         export_object_name=None, error_message=None,
@@ -416,7 +609,7 @@ def _idle_response(employee: Employee) -> FaceTrainingStatusResponse:
 async def _job_payload(db: AsyncSession, *, employee: Employee, job: EmployeeFaceTrainingJob | None) -> FaceTrainingStatusResponse:
     if job is None:
         return _idle_response(employee)
-    if job.status == "failed" and _is_stale_scrfd_error(job.error_message) and _ensure_scrfd():
+    if job.status == "failed" and _is_stale_scrfd_error(job.error_message):
         return _idle_response(employee)
 
     camera_name = None
@@ -426,12 +619,26 @@ async def _job_payload(db: AsyncSession, *, employee: Employee, job: EmployeeFac
         camera_name = cam.name if cam else None
 
     coverage = {l: int((job.angle_coverage or {}).get(l, 0) or 0) for l in ANGLE_LABELS}
+    sample_prefix = f"employee-faces/{_object_segment(employee.name)}/{_object_segment(camera_name or 'unknown')}/{job.id}/%"
+    embedded_r = await db.execute(
+        select(func.count()).select_from(EmployeeFaceTemplate).where(
+            EmployeeFaceTemplate.employee_id == employee.id,
+            EmployeeFaceTemplate.sample_image_object_name.like(sample_prefix),
+        )
+    )
+    embedded_frames = int(embedded_r.scalar_one() or 0)
+    uploaded_frames = int(job.accepted_frames or 0)
+    remaining_frames = max(0, int(job.target_frames or DEFAULT_TARGET_FRAMES) - (
+        embedded_frames if job.status in {"embedding_processing", "completed"} else uploaded_frames
+    ))
     return FaceTrainingStatusResponse(
         job_id=job.id, employee_id=employee.id, employee_name=employee.name,
         camera_id=job.camera_id, camera_name=camera_name, state=job.status,
         progress=int(job.progress or 0), captured_frames=int(job.captured_frames or 0),
         accepted_frames=int(job.accepted_frames or 0), rejected_frames=int(job.rejected_frames or 0),
+        uploaded_frames=uploaded_frames, embedded_frames=embedded_frames,
         target_frames=int(job.target_frames or DEFAULT_TARGET_FRAMES),
+        remaining_frames=remaining_frames,
         duration_seconds=int(job.duration_seconds or DEFAULT_DURATION_SECONDS),
         replace_existing=bool(job.replace_existing), debug_mode=bool(getattr(job, "debug_mode", False)),
         angle_coverage=coverage, export_object_name=job.export_object_name,
@@ -455,6 +662,7 @@ async def get_face_training_status(*, tenant_id: str, employee_id: uuid.UUID) ->
 
 async def start_face_training_job(
     *, tenant_id: str, employee_id: uuid.UUID, camera_id: uuid.UUID,
+    camera_name: str, employee_name: str,
     replace_existing: bool, target_frames: int = DEFAULT_TARGET_FRAMES,
     duration_seconds: int = DEFAULT_DURATION_SECONDS, debug_mode: bool = False,
 ) -> FaceTrainingStatusResponse:
@@ -462,10 +670,14 @@ async def start_face_training_job(
         emp_r = await db.execute(select(Employee).where(Employee.id == employee_id, Employee.tenant_id == tenant_id))
         emp = emp_r.scalar_one_or_none()
         if emp is None: raise HTTPException(404, "Employee not found")
+        if emp.name != employee_name:
+            raise HTTPException(409, "Selected employee no longer matches the current record")
 
         cam_r = await db.execute(select(Camera).where(Camera.id == camera_id, Camera.tenant_id == tenant_id))
         cam = cam_r.scalar_one_or_none()
         if cam is None: raise HTTPException(404, "Camera not found")
+        if cam.name != camera_name:
+            raise HTTPException(409, "Selected camera no longer matches the current record")
         if not cam.is_active: raise HTTPException(409, "Selected camera is offline")
 
         if await _active_job(db, employee_id):
@@ -473,7 +685,7 @@ async def start_face_training_job(
 
         job = EmployeeFaceTrainingJob(
             tenant_id=tenant_id, employee_id=employee_id, camera_id=camera_id,
-            status="capturing", progress=0, captured_frames=0, accepted_frames=0, rejected_frames=0,
+            status="created", progress=0, captured_frames=0, accepted_frames=0, rejected_frames=0,
             target_frames=max(1, target_frames), duration_seconds=max(30, duration_seconds),
             replace_existing=replace_existing, debug_mode=debug_mode,
             angle_coverage={l: 0 for l in ANGLE_LABELS},
@@ -507,23 +719,47 @@ async def cancel_face_training_job(*, tenant_id: str, employee_id: uuid.UUID) ->
 
 async def _run_face_training_job(job_id: uuid.UUID) -> None:
     async with async_session() as db:
-        job = await db.get(EmployeeFaceTrainingJob, job_id)
-        if job is None:
+        job_r = await db.execute(
+            select(
+                EmployeeFaceTrainingJob.tenant_id,
+                EmployeeFaceTrainingJob.employee_id,
+                EmployeeFaceTrainingJob.camera_id,
+                EmployeeFaceTrainingJob.target_frames,
+                EmployeeFaceTrainingJob.duration_seconds,
+                EmployeeFaceTrainingJob.replace_existing,
+                EmployeeFaceTrainingJob.debug_mode,
+            ).where(EmployeeFaceTrainingJob.id == job_id)
+        )
+        job_row = job_r.one_or_none()
+        if job_row is None:
             return
+        tenant_id, employee_id, camera_id, target_frames_value, duration_seconds_value, replace_existing, debug_mode = job_row
+        reset_job_runtime_state(job_id)
         try:
-            emp_r = await db.execute(select(Employee).where(Employee.id == job.employee_id, Employee.tenant_id == job.tenant_id))
-            cam_r = await db.execute(select(Camera).where(Camera.id == job.camera_id, Camera.tenant_id == job.tenant_id))
+            emp_r = await db.execute(select(Employee).where(Employee.id == employee_id, Employee.tenant_id == tenant_id))
+            cam_r = await db.execute(select(Camera).where(Camera.id == camera_id, Camera.tenant_id == tenant_id))
             emp, cam = emp_r.scalar_one_or_none(), cam_r.scalar_one_or_none()
             if emp is None or cam is None:
                 raise HTTPException(404, "Employee or camera not found")
             employee = emp
             camera = cam
-            if job.cancel_requested:
+            if await _job_cancel_requested(db, job_id):
                 return
 
-            await _set_state(db, job, status="capturing", updated_at=datetime.now(timezone.utc))
+            await _assert_triton_models_ready()
 
-            capture = await _open_capture(_rtsp_url(cam.name))
+            target_frames = int(target_frames_value or DEFAULT_TARGET_FRAMES)
+            duration_seconds = int(duration_seconds_value or DEFAULT_DURATION_SECONDS)
+            replace_existing = bool(replace_existing)
+            debug_mode = bool(debug_mode)
+
+            await _set_state(db, job_id, status="capturing", updated_at=datetime.now(timezone.utc))
+
+            logger.info(
+                "[face-training] Starting capture for employee %s on camera %s (ID: %s) using RTSP URL: %s",
+                employee.name, camera.name, str(camera.id), cam.rtsp_url
+            )
+            capture = await _open_capture(cam.rtsp_url)
             if capture is None:
                 raise HTTPException(409, "Unable to open camera stream for training")
 
@@ -531,12 +767,14 @@ async def _run_face_training_job(job_id: uuid.UUID) -> None:
 
             try:
                 accepted_samples: list[dict[str, Any]] = []
-                seen_embeddings: list[list[float]] = []
+                seen_hashes: list[int] = []
                 angle_counts: dict[str, int] = {label: 0 for label in ANGLE_LABELS}
                 state: dict[str, Any] = {
-                    "processed": 0,
+                    "captured": 0,
+                    "uploaded": 0,
+                    "embedded": 0,
                     "rejected": 0,
-                    "status": "capturing",
+                    "phase": "capturing",
                     "detector_face_count": 0,
                     "detector_confidence": None,
                     "detector_bbox": None,
@@ -548,18 +786,27 @@ async def _run_face_training_job(job_id: uuid.UUID) -> None:
                 state_lock = asyncio.Lock()
                 persist_lock = asyncio.Lock()
                 progress_event = asyncio.Event()
-                shutdown_event = asyncio.Event()
                 reporter_done_event = asyncio.Event()
-                queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=TRAINING_QUEUE_SIZE)
                 next_template_version = version_floor
+
+                for index in range(EMBEDDING_WORKERS):
+                    set_worker_state(job_id, f"embedding_worker_{index + 1}", "idle")
+                set_queue_depth(job_id, 0)
 
                 async def _snapshot() -> dict[str, Any]:
                     async with state_lock:
+                        approved = len(accepted_samples)
+                        embedded = int(state["embedded"])
+                        phase = str(state["phase"])
                         return {
-                            "status": state["status"],
-                            "processed": state["processed"],
-                            "rejected": state["rejected"],
-                            "accepted": len(accepted_samples),
+                            "status": phase if phase != "capturing" else "capturing",
+                            "captured": int(state["captured"]),
+                            "rejected": int(state["rejected"]),
+                            "accepted": approved,
+                            "uploaded": int(state["uploaded"]),
+                            "embedded": embedded,
+                            "remaining": max(0, target_frames - (embedded if phase in {"embedding_processing", "completed"} else approved)),
+                            "progress": _phase_progress(phase, approved, embedded, target_frames),
                             "angle_coverage": dict(angle_counts),
                             "detector_face_count": state["detector_face_count"],
                             "detector_confidence": state["detector_confidence"],
@@ -572,61 +819,34 @@ async def _run_face_training_job(job_id: uuid.UUID) -> None:
 
                 async def _persist_snapshot(snapshot: dict[str, Any]) -> None:
                     async with async_session() as progress_db:
-                        progress_job = await progress_db.get(EmployeeFaceTrainingJob, job.id)
-                        if progress_job is None:
-                            return
-                        progress_job.status = snapshot["status"]
-                        progress_job.captured_frames = int(snapshot["processed"])
-                        progress_job.accepted_frames = int(snapshot["accepted"])
-                        progress_job.rejected_frames = int(snapshot["rejected"])
-                        progress_job.progress = _progress(int(snapshot["accepted"]), job.target_frames)
-                        progress_job.angle_coverage = _json_safe(snapshot["angle_coverage"])
-                        progress_job.detector_face_count = int(snapshot["detector_face_count"] or 0)
-                        progress_job.detector_confidence = (
-                            float(snapshot["detector_confidence"]) if snapshot["detector_confidence"] is not None else None
+                        await progress_db.execute(
+                            update(EmployeeFaceTrainingJob)
+                            .where(EmployeeFaceTrainingJob.id == job_id)
+                            .values(
+                                status=snapshot["status"],
+                                captured_frames=int(snapshot["captured"]),
+                                accepted_frames=int(snapshot["accepted"]),
+                                rejected_frames=int(snapshot["rejected"]),
+                                progress=int(snapshot["progress"]),
+                                angle_coverage=_json_safe(snapshot["angle_coverage"]),
+                                detector_face_count=int(snapshot["detector_face_count"] or 0),
+                                detector_confidence=(
+                                    float(snapshot["detector_confidence"])
+                                    if snapshot["detector_confidence"] is not None
+                                    else None
+                                ),
+                                detector_bbox=_json_safe(snapshot["detector_bbox"]),
+                                rejection_reason=snapshot["rejection_reason"],
+                                export_object_name=snapshot["export_object_name"],
+                                error_message=snapshot["error_message"],
+                                updated_at=datetime.now(timezone.utc),
+                                finished_at=snapshot["finished_at"],
+                            )
                         )
-                        progress_job.detector_bbox = _json_safe(snapshot["detector_bbox"])
-                        progress_job.rejection_reason = snapshot["rejection_reason"]
-                        progress_job.export_object_name = snapshot["export_object_name"]
-                        progress_job.error_message = snapshot["error_message"]
-                        progress_job.updated_at = datetime.now(timezone.utc)
-                        progress_job.finished_at = snapshot["finished_at"]
                         await progress_db.commit()
 
-                async def _persist_accepted_sample(sample: dict[str, Any]) -> int:
-                    nonlocal next_template_version
-
-                    async with persist_lock:
-                        next_template_version += 1
-                        sample_version = next_template_version
-
-                    sample_object_name = await asyncio.to_thread(
-                        upload_employee_face,
-                        sample["sample_image_object_name"],
-                        sample["image_bytes"],
-                        "image/jpeg",
-                    )
-
-                    async with async_session() as persist_db:
-                        template = EmployeeFaceTemplate(
-                            employee_id=employee.id,
-                            embedding=sample["embedding"],
-                            quality_score=sample["quality_score"],
-                            angle_label=sample["angle_label"],
-                            source_camera_id=camera.id,
-                            source_session_id=None,
-                            capture_date=datetime.now(timezone.utc),
-                            is_active=False,
-                            version=sample_version,
-                            sample_image_object_name=sample_object_name,
-                        )
-                        persist_db.add(template)
-                        await persist_db.commit()
-
-                    return sample_version
-
                 async def _progress_reporter() -> None:
-                    last_committed_processed = 0
+                    last_committed_progress = -1
                     last_committed_at = time.monotonic()
                     while True:
                         try:
@@ -637,53 +857,82 @@ async def _run_face_training_job(job_id: uuid.UUID) -> None:
                         snapshot = await _snapshot()
                         now = time.monotonic()
                         should_commit = (
-                            snapshot["processed"] - last_committed_processed >= PROGRESS_COMMIT_FRAME_INTERVAL
+                            snapshot["progress"] != last_committed_progress
                             or now - last_committed_at >= PROGRESS_COMMIT_SECONDS
                             or reporter_done_event.is_set()
                         )
                         if not should_commit:
                             continue
                         await _persist_snapshot(snapshot)
-                        last_committed_processed = snapshot["processed"]
+                        last_committed_progress = snapshot["progress"]
                         last_committed_at = now
                         if reporter_done_event.is_set():
                             return
 
-                async def _producer() -> None:
+                async def _capture_producer() -> None:
                     nonlocal angle_counts
                     last_failure_count = 0
                     start = time.monotonic()
+
+                    async def _mark_rejection(
+                        *,
+                        image: np.ndarray | None,
+                        frame_index: int,
+                        reason: str,
+                        detail: str | None = None,
+                        detector_face_count: int = 0,
+                        detector_confidence: float | None = None,
+                        detector_bbox: list[float] | None = None,
+                    ) -> None:
+                        if image is not None:
+                            preview_bytes = _jpeg_bytes(image)
+                            record_current_face_preview(job_id, preview_bytes)
+                            record_rejected_face_preview(job_id, preview_bytes, reason)
+                            record_rejected_preview_object(
+                                job_id,
+                                employee.name,
+                                camera.name,
+                                preview_bytes,
+                                rejection_reason=reason,
+                                frame_index=frame_index,
+                            )
+                        _log_training_rejection(job_id, frame_index=frame_index, reason=reason, detail=detail)
+                        async with state_lock:
+                            state["rejected"] += 1
+                            state["detector_face_count"] = detector_face_count
+                            state["detector_confidence"] = detector_confidence
+                            state["detector_bbox"] = detector_bbox
+                            state["rejection_reason"] = reason
+                        progress_event.set()
+
                     try:
                         while True:
-                            await db.refresh(job)
-                            if job.cancel_requested:
+                            if await _job_cancel_requested(db, job_id):
                                 async with state_lock:
-                                    state["status"] = "cancelled"
+                                    state["phase"] = "cancelled"
                                     state["finished_at"] = datetime.now(timezone.utc)
-                                shutdown_event.set()
                                 progress_event.set()
                                 return
 
                             now = time.monotonic()
                             async with state_lock:
-                                accepted_count = len(accepted_samples)
-                            if now - start >= job.duration_seconds:
-                                shutdown_event.set()
+                                approved_count = len(accepted_samples)
+                            if approved_count >= target_frames:
                                 return
-                            if accepted_count >= job.target_frames:
-                                shutdown_event.set()
+                            if now - start >= duration_seconds:
                                 return
 
                             ok, frame = await _read_frame(capture)
                             if not ok or frame is None:
                                 last_failure_count += 1
                                 _log_training_rejection(
-                                    job,
-                                    frame_index=state["processed"],
+                                    job_id,
+                                    frame_index=int(state["captured"]),
                                     reason="camera_frame_unavailable",
                                     detail=f"failure_count={last_failure_count}",
                                 )
                                 async with state_lock:
+                                    state["captured"] += 1
                                     state["rejected"] += 1
                                     state["detector_face_count"] = 0
                                     state["detector_confidence"] = None
@@ -696,18 +945,33 @@ async def _run_face_training_job(job_id: uuid.UUID) -> None:
 
                             last_failure_count = 0
                             async with state_lock:
-                                state["processed"] += 1
-                                frame_index = state["processed"]
+                                state["captured"] += 1
+                                frame_index = int(state["captured"])
 
-                            detections = await asyncio.to_thread(_detect, frame)
+                            detections = await _detect(frame)
                             face_count = len(detections)
                             top_detection = _best_detection(detections, frame.shape)
                             detector_confidence = float(top_detection["score"]) if top_detection else None
                             detector_bbox = _normalize_bbox(top_detection["bbox"], frame.shape) if top_detection else None
 
-                            if job.debug_mode:
+                            face_input: np.ndarray | None = None
+                            if top_detection is not None:
+                                face_box = [float(value) for value in top_detection["bbox"]]
+                                crop_x1, crop_y1, crop_x2, crop_y2 = _crop_bounds(frame, face_box, margin=FACE_CROP_MARGIN)
+                                face_crop = frame[crop_y1:crop_y2, crop_x1:crop_x2].copy()
+                                keypoints = top_detection.get("keypoints")
+                                aligned_face = None
+                                if keypoints is not None:
+                                    local_keypoints = np.asarray(keypoints, dtype=np.float32).copy()
+                                    local_keypoints[:, 0] -= float(crop_x1)
+                                    local_keypoints[:, 1] -= float(crop_y1)
+                                    aligned_face = _align(face_crop, local_keypoints)
+                                face_input = aligned_face if aligned_face is not None else face_crop
+                                record_current_face_preview(job_id, _jpeg_bytes(face_input))
+
+                            if debug_mode:
                                 _log_training_debug(
-                                    job,
+                                    job_id,
                                     frame_index=frame_index,
                                     face_count=face_count,
                                     confidence=detector_confidence,
@@ -715,249 +979,387 @@ async def _run_face_training_job(job_id: uuid.UUID) -> None:
                                 )
 
                             if face_count == 0 or top_detection is None:
-                                _log_training_rejection(job, frame_index=frame_index, reason="no_face_detected")
-                                async with state_lock:
-                                    state["rejected"] += 1
-                                    state["detector_face_count"] = face_count
-                                    state["detector_confidence"] = detector_confidence
-                                    state["detector_bbox"] = detector_bbox
-                                    state["rejection_reason"] = "no_face_detected"
-                                progress_event.set()
+                                await _mark_rejection(
+                                    image=None,
+                                    frame_index=frame_index,
+                                    reason="no_face_detected",
+                                    detector_face_count=face_count,
+                                    detector_confidence=detector_confidence,
+                                    detector_bbox=detector_bbox,
+                                )
                                 continue
 
-                            face_box = tuple(int(value) for value in top_detection["bbox"])
-                            face_crop = _crop(frame, list(face_box))
-                            keypoints = top_detection.get("keypoints")
-                            aligned_face = _align(frame, keypoints) if keypoints is not None else None
-                            face_input = aligned_face if aligned_face is not None else face_crop
+                            # Temporarily allow multiple faces for debugging
+                            # if face_count > 1:
+                            #     await _mark_rejection(
+                            #         image=face_input if face_input is not None else frame,
+                            #         frame_index=frame_index,
+                            #         reason="multiple_faces_detected",
+                            #         detector_face_count=face_count,
+                            #         detector_confidence=detector_confidence,
+                            #         detector_bbox=detector_bbox,
+                            #     )
+                            #     continue
+
+                            if _is_occluded_detection(top_detection, frame.shape):
+                                await _mark_rejection(
+                                    image=face_input if face_input is not None else frame,
+                                    frame_index=frame_index,
+                                    reason="occluded_face_detected",
+                                    detector_face_count=face_count,
+                                    detector_confidence=detector_confidence,
+                                    detector_bbox=detector_bbox,
+                                )
+                                continue
 
                             blur, brightness, contrast = _quality(face_input)
                             if blur < BLUR_THRESHOLD or brightness < LIGHT_LOW_THRESHOLD or brightness > LIGHT_HIGH_THRESHOLD:
-                                _log_training_rejection(
-                                    job,
+                                await _mark_rejection(
+                                    image=face_input,
                                     frame_index=frame_index,
                                     reason="face_quality_failed",
                                     detail=f"blur={blur:.1f} brightness={brightness:.1f} contrast={contrast:.1f}",
+                                    detector_face_count=face_count,
+                                    detector_confidence=detector_confidence,
+                                    detector_bbox=detector_bbox,
                                 )
-                                async with state_lock:
-                                    state["rejected"] += 1
-                                    state["detector_face_count"] = face_count
-                                    state["detector_confidence"] = detector_confidence
-                                    state["detector_bbox"] = detector_bbox
-                                    state["rejection_reason"] = "face_quality_failed"
-                                progress_event.set()
                                 continue
 
                             angle = _angle(list(face_box), frame.shape)
-                            ok_encode, encoded = cv2.imencode(".jpg", face_input)
-                            if not ok_encode:
-                                _log_training_rejection(job, frame_index=frame_index, reason="face_encode_failed")
-                                async with state_lock:
-                                    state["rejected"] += 1
-                                    state["detector_face_count"] = face_count
-                                    state["detector_confidence"] = detector_confidence
-                                    state["detector_bbox"] = detector_bbox
-                                    state["rejection_reason"] = "face_encode_failed"
-                                progress_event.set()
+                            angle_reached = False
+                            async with state_lock:
+                                angle_reached = angle_counts[angle] >= MAX_PER_ANGLE
+                            if angle_reached:
+                                await _mark_rejection(
+                                    image=face_input,
+                                    frame_index=frame_index,
+                                    reason="angle_quota_reached",
+                                    detector_face_count=face_count,
+                                    detector_confidence=detector_confidence,
+                                    detector_bbox=detector_bbox,
+                                )
                                 continue
 
-                            sample_index = 0
-                            sample_object_name = ""
+                            candidate_hash = _image_ahash(face_input)
+                            if _is_duplicate_hash(candidate_hash, seen_hashes):
+                                await _mark_rejection(
+                                    image=face_input,
+                                    frame_index=frame_index,
+                                    reason="duplicate_frame_detected",
+                                    detector_face_count=face_count,
+                                    detector_confidence=detector_confidence,
+                                    detector_bbox=detector_bbox,
+                                )
+                                continue
+
+                            ok_encode, encoded = cv2.imencode(".jpg", face_input)
+                            if not ok_encode:
+                                await _mark_rejection(
+                                    image=face_input,
+                                    frame_index=frame_index,
+                                    reason="face_encode_failed",
+                                    detector_face_count=face_count,
+                                    detector_confidence=detector_confidence,
+                                    detector_bbox=detector_bbox,
+                                )
+                                continue
+
+                            sample_index = len(accepted_samples) + 1
+                            if sample_index > target_frames:
+                                return
+
+                            sample_object_name = _sample_object_name(employee.name, camera.name, job_id, sample_index)
                             sample_score = round(min(1.0, (blur / 250.0)) * min(1.0, contrast / 40.0), 3)
+                            stored_object_name = await asyncio.to_thread(
+                                upload_employee_face,
+                                sample_object_name,
+                                encoded.tobytes(),
+                                "image/jpeg",
+                            )
+                            record_current_face_preview(job_id, encoded.tobytes())
+                            record_accepted_face_preview(job_id, encoded.tobytes())
+                            record_image_uploaded(job_id)
+
+                            sample_record = {
+                                "frame_index": frame_index,
+                                "quality_score": sample_score,
+                                "angle_label": angle,
+                                "sample_image_object_name": stored_object_name,
+                                "face_count": face_count,
+                                "detector_confidence": detector_confidence,
+                                "detector_bbox": detector_bbox,
+                            }
                             async with state_lock:
-                                if len(accepted_samples) < job.target_frames:
-                                    sample_index = len(accepted_samples) + 1
-                                    sample_object_name = f"employee-face-training/{employee.id}/{job.id}/{sample_index:03d}-{angle}.jpg"
+                                accepted_samples.append(sample_record)
+                                seen_hashes.append(candidate_hash)
+                                angle_counts[angle] = angle_counts.get(angle, 0) + 1
+                                state["uploaded"] = len(accepted_samples)
                                 state["detector_face_count"] = face_count
                                 state["detector_confidence"] = detector_confidence
                                 state["detector_bbox"] = detector_bbox
                                 state["rejection_reason"] = None
-                            if sample_index == 0:
-                                continue
-
-                            await queue.put(
-                                {
-                                    "frame_index": frame_index,
-                                    "face_input": face_input,
-                                    "quality_score": sample_score,
-                                    "angle_label": angle,
-                                    "sample_image_object_name": sample_object_name,
-                                    "image_bytes": encoded.tobytes(),
-                                    "face_count": face_count,
-                                    "detector_confidence": detector_confidence,
-                                    "detector_bbox": detector_bbox,
-                                }
-                            )
+                                state["phase"] = "uploading"
+                            set_queue_depth(job_id, max(0, len(accepted_samples) - int(state["embedded"])))
                             progress_event.set()
                     finally:
-                        shutdown_event.set()
-                        for _ in range(EMBEDDING_WORKERS):
-                            await queue.put(None)
+                        pass
 
-                async def _consumer() -> None:
+                async def _embed_sample(sample: dict[str, Any]) -> tuple[list[float], bytes]:
+                    image_bytes = await asyncio.to_thread(_download_employee_face_bytes, sample["sample_image_object_name"])
+                    decoded = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+                    if decoded is None:
+                        raise RuntimeError(f"Failed to decode uploaded face image: {sample['sample_image_object_name']}")
+                    embedding = await _embed(decoded)
+                    return embedding, image_bytes
+
+                async def _persist_embedded_sample(sample: dict[str, Any], embedding: list[float], sample_version: int) -> None:
+                    async with async_session() as persist_db:
+                        template = EmployeeFaceTemplate(
+                            employee_id=employee.id,
+                            embedding=embedding,
+                            quality_score=sample["quality_score"],
+                            angle_label=sample["angle_label"],
+                            source_camera_id=camera.id,
+                            source_session_id=None,
+                            capture_date=datetime.now(timezone.utc),
+                            is_active=False,
+                            version=sample_version,
+                            sample_image_object_name=sample["sample_image_object_name"],
+                        )
+                        persist_db.add(template)
+                        await persist_db.commit()
+
+                async def _embedding_producer(embed_queue: asyncio.Queue[Any]) -> None:
+                    for sample in accepted_samples:
+                        await embed_queue.put(sample)
+                    for _ in range(EMBEDDING_WORKERS):
+                        await embed_queue.put(None)
+
+                async def _embedding_consumer(embed_queue: asyncio.Queue[Any]) -> None:
+                    nonlocal next_template_version
+                    task = asyncio.current_task()
+                    worker_suffix = 1
+                    if task is not None:
+                        try:
+                            worker_suffix = int(task.get_name().split("-")[-1]) + 1
+                        except Exception:
+                            worker_suffix = 1
+                    worker_name = f"embedding_worker_{worker_suffix}"
                     while True:
-                        item = await queue.get()
+                        item = await embed_queue.get()
                         try:
                             if item is None:
+                                set_worker_state(job_id, worker_name, "finished")
                                 return
 
-                            async with state_lock:
-                                if len(accepted_samples) >= job.target_frames or shutdown_event.is_set():
-                                    continue
+                            set_worker_state(job_id, worker_name, "embedding")
+                            set_queue_depth(job_id, embed_queue.qsize())
 
-                            embedding = await _embed(item["face_input"])
+                            embedding: list[float] | None = None
+                            last_error: Exception | None = None
+                            embed_started_at = time.monotonic()
+                            for attempt in range(3):
+                                try:
+                                    embedding, _ = await _embed_sample(item)
+                                    break
+                                except Exception as exc:
+                                    last_error = exc
+                                    if attempt >= 2:
+                                        raise
+                                    await asyncio.sleep(0.5 * (attempt + 1))
+                            if embedding is None:
+                                raise RuntimeError(f"Failed to embed sample {item['sample_image_object_name']}: {last_error}")
 
-                            rejection_reason: str | None = None
-                            rejection_detail: str | None = None
-                            should_accept = False
+                            record_embedding_timing(job_id, (time.monotonic() - embed_started_at) * 1000.0)
+
+                            async with persist_lock:
+                                next_template_version += 1
+                                sample_version = next_template_version
+                            await _persist_embedded_sample(item, embedding, sample_version)
+
                             async with state_lock:
-                                if len(accepted_samples) >= job.target_frames or shutdown_event.is_set():
-                                    continue
-                                if any(_cosine(embedding, existing) > DUPLICATE_SIMILARITY_THRESHOLD for existing in seen_embeddings):
-                                    state["rejected"] += 1
-                                    state["rejection_reason"] = "duplicate_embedding_detected"
-                                    rejection_reason = "duplicate_embedding_detected"
-                                    rejection_detail = f"threshold={DUPLICATE_SIMILARITY_THRESHOLD}"
-                                elif angle_counts[item["angle_label"]] >= MAX_PER_ANGLE:
-                                    state["rejected"] += 1
-                                    state["rejection_reason"] = "angle_quota_reached"
-                                    rejection_reason = "angle_quota_reached"
-                                    rejection_detail = f"angle={item['angle_label']} count={angle_counts[item['angle_label']]} max={MAX_PER_ANGLE}"
-                                else:
-                                    accepted_samples.append(
-                                        {
-                                            "embedding": embedding,
-                                            "quality_score": item["quality_score"],
-                                            "angle_label": item["angle_label"],
-                                            "sample_image_object_name": item["sample_image_object_name"],
-                                            "image_bytes": item["image_bytes"],
-                                        }
-                                    )
-                                    seen_embeddings.append(embedding)
-                                    angle_counts[item["angle_label"]] = angle_counts.get(item["angle_label"], 0) + 1
-                                    state["rejection_reason"] = None
-                                    should_accept = True
-                                    if len(accepted_samples) >= job.target_frames:
-                                        shutdown_event.set()
+                                state["embedded"] += 1
                                 state["detector_face_count"] = int(item["face_count"])
                                 state["detector_confidence"] = item["detector_confidence"]
                                 state["detector_bbox"] = item["detector_bbox"]
-                            if rejection_reason is not None:
-                                _log_training_rejection(
-                                    job,
-                                    frame_index=item["frame_index"],
-                                    reason=rejection_reason,
-                                    detail=rejection_detail,
-                                )
-                            if should_accept:
-                                await _persist_accepted_sample(item)
-                                progress_event.set()
+                                state["rejection_reason"] = None
+                            set_queue_depth(job_id, max(0, len(accepted_samples) - int(state["embedded"])))
+                            progress_event.set()
+                            set_worker_state(job_id, worker_name, "busy")
                         finally:
-                            queue.task_done()
+                            set_queue_depth(job_id, embed_queue.qsize())
+                            embed_queue.task_done()
+                    set_worker_state(job_id, worker_name, "finished")
 
-                progress_task = asyncio.create_task(_progress_reporter(), name=f"face-training-progress-{job.id}")
-                producer_task = asyncio.create_task(_producer(), name=f"face-training-producer-{job.id}")
-                consumer_tasks = [
-                    asyncio.create_task(_consumer(), name=f"face-training-consumer-{job.id}-{index}")
-                    for index in range(EMBEDDING_WORKERS)
-                ]
+                progress_task = asyncio.create_task(_progress_reporter(), name=f"face-training-progress-{job_id}")
+                producer_task = asyncio.create_task(_capture_producer(), name=f"face-training-capture-{job_id}")
 
                 try:
-                    await asyncio.gather(producer_task, *consumer_tasks)
-                finally:
-                    reporter_done_event.set()
+                    await producer_task
+
+                    async with state_lock:
+                        captured_frames = int(state["captured"])
+                        rejected_frames = int(state["rejected"])
+                        accepted_frame_count = len(accepted_samples)
+                        final_angle_counts = dict(angle_counts)
+                        final_status = str(state["phase"])
+
+                    if await _job_cancel_requested(db, job_id) or final_status == "cancelled":
+                        await db.execute(
+                            update(EmployeeFaceTrainingJob)
+                            .where(EmployeeFaceTrainingJob.id == job_id)
+                            .values(
+                                status="cancelled",
+                                finished_at=datetime.now(timezone.utc),
+                            )
+                        )
+                        return
+
+                    if accepted_frame_count < target_frames:
+                        raise HTTPException(422, f"Only {accepted_frame_count} approved samples were captured; target is {target_frames}")
+
+                    await db.execute(
+                        update(EmployeeFaceTrainingJob)
+                        .where(EmployeeFaceTrainingJob.id == job_id)
+                        .values(
+                            status="uploading",
+                            updated_at=datetime.now(timezone.utc),
+                        )
+                    )
+                    async with state_lock:
+                        state["phase"] = "uploading"
                     progress_event.set()
-                    progress_task.cancel()
-                    for task in (producer_task, *consumer_tasks):
-                        if not task.done():
-                            task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await progress_task
-                    for task in consumer_tasks:
-                        with contextlib.suppress(asyncio.CancelledError):
-                            await task
 
-                async with state_lock:
-                    captured_frames = state["processed"]
-                    rejected_frames = state["rejected"]
-                    accepted_frame_count = len(accepted_samples)
-                    final_angle_counts = dict(angle_counts)
-                    final_status = state["status"]
+                    await db.execute(
+                        update(EmployeeFaceTrainingJob)
+                        .where(EmployeeFaceTrainingJob.id == job_id)
+                        .values(
+                            status="embedding_processing",
+                            updated_at=datetime.now(timezone.utc),
+                        )
+                    )
+                    async with state_lock:
+                        state["phase"] = "embedding_processing"
+                    progress_event.set()
 
-                if job.cancel_requested or final_status == "cancelled":
-                    await _set_state(db, job, status="cancelled", finished_at=datetime.now(timezone.utc))
-                    return
+                    embed_queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=TRAINING_QUEUE_SIZE)
+                    embedding_producer_task = asyncio.create_task(_embedding_producer(embed_queue), name=f"face-training-embedding-producer-{job_id}")
+                    embedding_consumer_tasks = [
+                        asyncio.create_task(_embedding_consumer(embed_queue), name=f"face-training-embedding-consumer-{job_id}-{index}")
+                        for index in range(EMBEDDING_WORKERS)
+                    ]
 
-                if not accepted_samples:
-                    raise HTTPException(422, "No high-quality face samples were captured")
+                    try:
+                        await asyncio.gather(embedding_producer_task, *embedding_consumer_tasks)
+                    finally:
+                        for task in (embedding_producer_task, *embedding_consumer_tasks):
+                            if not task.done():
+                                task.cancel()
+                        for task in embedding_consumer_tasks:
+                            with contextlib.suppress(asyncio.CancelledError):
+                                await task
 
-                await _set_state(db, job, status="processing", updated_at=datetime.now(timezone.utc))
+                    export_timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+                    export_object_name = (
+                        f"employee-face-training/{_object_segment(employee.name)}/{_object_segment(camera.name)}/"
+                        f"{job_id}/{export_timestamp}-face_embedding.pkl"
+                    )
+                    async with async_session() as export_db:
+                        rows_r = await export_db.execute(
+                            select(EmployeeFaceTemplate).where(
+                                EmployeeFaceTemplate.employee_id == employee.id,
+                                EmployeeFaceTemplate.sample_image_object_name.in_([sample["sample_image_object_name"] for sample in accepted_samples]),
+                            )
+                        )
+                        rows = rows_r.scalars().all()
+                    export_payload = {
+                        "employee_id": str(employee.id),
+                        "employee_name": employee.name,
+                        "job_id": str(job_id),
+                        "camera_id": str(camera.id),
+                        "camera_name": camera.name,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                        "samples": [
+                            {
+                                "angle_label": row.angle_label,
+                                "quality_score": float(row.quality_score),
+                                "embedding": row.embedding,
+                                "sample_image_object_name": row.sample_image_object_name,
+                            }
+                            for row in rows
+                        ],
+                    }
+                    await asyncio.to_thread(
+                        upload_employee_asset,
+                        export_object_name,
+                        pickle.dumps(export_payload),
+                        "application/octet-stream",
+                    )
 
-                export_object_name = f"employee-face-training/{employee.id}/{job.id}/face_embedding.pkl"
-                export_payload = {
-                    "employee_id": str(employee.id),
-                    "employee_name": employee.name,
-                    "job_id": str(job.id),
-                    "camera_id": str(camera.id),
-                    "camera_name": camera.name,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                    "samples": [
-                        {
-                            "angle_label": sample["angle_label"],
-                            "quality_score": sample["quality_score"],
-                            "embedding": sample["embedding"],
-                            "sample_image_object_name": sample["sample_image_object_name"],
-                        }
-                        for sample in accepted_samples
-                    ],
-                }
-                await asyncio.to_thread(
-                    upload_bytes,
-                    export_object_name,
-                    pickle.dumps(export_payload),
-                    "application/octet-stream",
-                )
+                    if replace_existing:
+                        await db.execute(
+                            update(EmployeeFaceTemplate)
+                            .where(
+                                EmployeeFaceTemplate.employee_id == employee.id,
+                                EmployeeFaceTemplate.is_active == True,
+                                EmployeeFaceTemplate.version <= version_floor,
+                            )
+                            .values(is_active=False)
+                        )
 
-                if job.replace_existing:
                     await db.execute(
                         update(EmployeeFaceTemplate)
                         .where(
                             EmployeeFaceTemplate.employee_id == employee.id,
-                            EmployeeFaceTemplate.is_active == True,
-                            EmployeeFaceTemplate.version <= version_floor,
+                            EmployeeFaceTemplate.version > version_floor,
                         )
-                        .values(is_active=False)
+                        .values(is_active=True)
                     )
 
-                await db.execute(
-                    update(EmployeeFaceTemplate)
-                    .where(
-                        EmployeeFaceTemplate.employee_id == employee.id,
-                        EmployeeFaceTemplate.version > version_floor,
-                    )
-                    .values(is_active=True)
-                )
+                    async with state_lock:
+                        state["phase"] = "completed"
+                        state["export_object_name"] = export_object_name
+                        state["finished_at"] = datetime.now(timezone.utc)
+                    progress_event.set()
 
-                await _set_state(db, job, status="completed", finished_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc))
-                job.progress = 100
-                job.captured_frames = captured_frames
-                job.accepted_frames = accepted_frame_count
-                job.rejected_frames = rejected_frames
-                job.angle_coverage = final_angle_counts
-                job.export_object_name = export_object_name
-                await db.commit()
+                    await db.execute(
+                        update(EmployeeFaceTrainingJob)
+                        .where(EmployeeFaceTrainingJob.id == job_id)
+                        .values(
+                            status="completed",
+                            finished_at=datetime.now(timezone.utc),
+                            updated_at=datetime.now(timezone.utc),
+                        )
+                    )
+                finally:
+                    reporter_done_event.set()
+                    progress_event.set()
+                    progress_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await progress_task
             finally:
                 await asyncio.to_thread(capture.release)
 
         except Exception as exc:
             logger.exception("Face training job %s failed", job_id)
             try:
-                job = await db.get(EmployeeFaceTrainingJob, job_id)
-                if job and job.status not in {"completed", "cancelled"}:
-                    import traceback
-                    job.status = "failed"
-                    job.error_message = traceback.format_exc(limit=3).splitlines()[-1]
-                    job.finished_at = job.updated_at = datetime.now(timezone.utc)
-                    await db.commit()
+                await db.rollback()
+                import traceback
+                async with async_session() as failure_db:
+                    failure_status = await failure_db.scalar(
+                        select(EmployeeFaceTrainingJob.status).where(EmployeeFaceTrainingJob.id == job_id)
+                    )
+                    if failure_status and failure_status not in {"completed", "cancelled"}:
+                        await failure_db.execute(
+                            update(EmployeeFaceTrainingJob)
+                            .where(EmployeeFaceTrainingJob.id == job_id)
+                            .values(
+                                status="failed",
+                                error_message=traceback.format_exc(limit=3).splitlines()[-1],
+                                finished_at=datetime.now(timezone.utc),
+                                updated_at=datetime.now(timezone.utc),
+                            )
+                        )
+                        await failure_db.commit()
             except Exception:
                 logger.exception("Could not persist failure state for job %s", job_id)

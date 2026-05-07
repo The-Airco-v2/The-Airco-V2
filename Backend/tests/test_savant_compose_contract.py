@@ -44,6 +44,9 @@ def test_local_compose_moves_triton_and_identity_to_full_gpu_profile():
     assert compose["services"]["identity-consumer"]["profiles"] == ["gpu-full"]
     command = compose["services"]["triton"]["command"]
     assert "--model-control-mode=explicit" in command
+    assert "--load-model=yolo26" in command
+    assert "--load-model=phone_detection" in command
+    assert "--load-model=yolo26-pose" in command
     assert "--load-model=arcface" in command
     assert "--load-model=osnet" in command
 

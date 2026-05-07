@@ -1,8 +1,9 @@
 """Prepare canonical model artifacts for the local V2 inference stack.
 
 Usage:
-    python scripts/export_tensorrt.py --model prepare_savant_person_onnx
-    python scripts/export_tensorrt.py --model prepare_savant_phone_onnx
+    python scripts/export_tensorrt.py --model prepare_yolo26_onnx
+    python scripts/export_tensorrt.py --model prepare_phone_detection_onnx
+    python scripts/export_tensorrt.py --model prepare_yolo26_pose_onnx
     python scripts/export_tensorrt.py --model arcface
     python scripts/export_tensorrt.py --model osnet
     python scripts/export_tensorrt.py --all
@@ -19,11 +20,14 @@ import tempfile
 import urllib.request
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
+WORKSPACE_ROOT = BACKEND_ROOT.parent
 MODELS_DIR = BACKEND_ROOT / "services" / "triton" / "models"
 SAVANT_MODELS_DIR = BACKEND_ROOT / "services" / "savant-pipeline" / "models"
-PHONE_MODEL_SOURCE = BACKEND_ROOT / "Triton Models" / "phone_detections" / "best.pt"
+PERSON_MODEL_SOURCE = WORKSPACE_ROOT / "Triton Models" / "person-detetcions" / "yolo26s.pt"
+PERSON_ONNX_SOURCE = BACKEND_ROOT / "yolo26s.onnx"
+PHONE_MODEL_SOURCE = WORKSPACE_ROOT / "Triton Models" / "phone_detections" / "best.pt"
 PHONE_ONNX_SOURCE = BACKEND_ROOT / "best.onnx"
-POSE_MODEL_SOURCE = BACKEND_ROOT / "Triton Models" / "pose_detetcion" / "yolo26s-pose.pt"
+POSE_MODEL_SOURCE = WORKSPACE_ROOT / "Triton Models" / "pose_detetcion" / "yolo26s-pose.pt"
 POSE_ONNX_SOURCE = BACKEND_ROOT / "yolo26s-pose.onnx"
 ARCFACE_ONNX_SOURCE = BACKEND_ROOT / "backend" / "models" / "arcface_r100.onnx"
 
@@ -53,6 +57,20 @@ def resolve_pose_model_source() -> Path:
 
     raise FileNotFoundError(
         f"Pose detector source model not found: {POSE_MODEL_SOURCE} or legacy fallback {legacy_source}"
+    )
+
+
+def resolve_person_model_source() -> Path:
+    """Return the person detector PT source artifact."""
+    if PERSON_MODEL_SOURCE.exists():
+        return PERSON_MODEL_SOURCE
+
+    legacy_source = BACKEND_ROOT / "yolov8n.pt"
+    if legacy_source.exists():
+        return legacy_source
+
+    raise FileNotFoundError(
+        f"Person detector source model not found: {PERSON_MODEL_SOURCE} or legacy fallback {legacy_source}"
     )
 
 
@@ -162,6 +180,34 @@ def ensure_canonical_onnx_io_names(path: Path, input_name: str, output_name: str
     return path
 
 
+def export_onnx_from_pt_source(pt_source: Path, onnx_source: Path) -> Path:
+    """Export a PT source artifact to a reusable ONNX cache path."""
+    if is_valid_onnx_model(onnx_source):
+        return onnx_source
+
+    from ultralytics import YOLO
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_pt = Path(temp_dir) / pt_source.name
+        shutil.copy2(pt_source, temp_pt)
+        model = YOLO(str(temp_pt))
+        model.export(
+            format="onnx",
+            imgsz=640,
+            batch=1,
+            device="cpu",
+        )
+        exported = temp_pt.with_suffix(".onnx")
+        if not exported.exists():
+            raise FileNotFoundError(f"Expected exported ONNX artifact was not created: {exported}")
+        shutil.copy2(exported, onnx_source)
+
+    if not is_valid_onnx_model(onnx_source):
+        raise ValueError(f"Exported ONNX source is not valid: {onnx_source}")
+
+    return onnx_source
+
+
 def ensure_arcface_source() -> Path:
     """Ensure a valid ArcFace ONNX source artifact is available for export."""
     if is_valid_onnx_model(ARCFACE_ONNX_SOURCE):
@@ -191,184 +237,111 @@ def ensure_arcface_source() -> Path:
     return ensure_canonical_onnx_io_names(ARCFACE_ONNX_SOURCE, "input", "output")
 
 
-def export_yolov8_person():
-    """Export YOLOv8n person detection to TensorRT."""
-    print("Exporting YOLOv8n person detection...")
-    dest = MODELS_DIR / "yolov8_person" / "1" / "model.plan"
+def export_yolo26():
+    """Export yolo26 person detection to TensorRT."""
+    print("Exporting yolo26 person detection...")
+    dest = MODELS_DIR / "yolo26" / "1" / "model.plan"
     if artifact_ready(dest):
-        print(f"Skipping YOLOv8n person detection; already present at {dest}")
+        print(f"Skipping yolo26 person detection; already present at {dest}")
         return
 
-    from ultralytics import YOLO
-
-    model = YOLO("yolov8n.pt")
-    model.export(
-        format="engine",
-        imgsz=640,
-        half=True,
-        batch=16,
-        device=0,
-    )
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    Path("yolov8n.engine").rename(dest)
-    print(f"Saved to {dest}")
-
-
-def prepare_savant_person_onnx():
-    """Export the canonical person detector to a Savant-owned ONNX artifact."""
-    print("Preparing Savant person detector ONNX...")
-    dest = SAVANT_MODELS_DIR / "yolov8_person" / "1" / "yolov8n.onnx"
-    if onnx_artifact_ready(dest):
-        print(f"Skipping Savant person detector ONNX; already present at {dest}")
-        return
-
-    from ultralytics import YOLO
-
-    model = YOLO("yolov8n.pt")
-    model.export(
-        format="onnx",
-        imgsz=640,
-        batch=1,
-        device="cpu",
-    )
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    Path("yolov8n.onnx").rename(dest)
-    print(f"Saved to {dest}")
-
-def export_yolov8_phone():
-    """Export YOLOv8n phone detection to TensorRT."""
-    print("Exporting YOLOv8n phone detection...")
-    dest = MODELS_DIR / "yolov8_phone" / "1" / "model.plan"
-    if artifact_ready(dest):
-        print(f"Skipping YOLOv8n phone detection; already present at {dest}")
-        return
-
-    from ultralytics import YOLO
-
-    phone_source = resolve_phone_model_source()
-
-    model = YOLO(str(phone_source))
-    onnx_path = PHONE_ONNX_SOURCE
-    source_ready = is_valid_onnx_model(onnx_path)
-    if not source_ready:
-        model.export(
-            format="onnx",
-            imgsz=640,
-            half=True,
-            batch=1,
-            device="cpu",
-        )
-        exported = phone_source.with_suffix(".onnx")
-        if not exported.exists():
-            raise FileNotFoundError(f"Expected exported ONNX artifact was not created: {exported}")
-        shutil.copy2(exported, onnx_path)
-    if not is_valid_onnx_model(onnx_path):
-        raise ValueError(f"Phone detector ONNX source is not valid: {onnx_path}")
-
+    source = export_onnx_from_pt_source(resolve_person_model_source(), PERSON_ONNX_SOURCE)
     dest.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run([
         "trtexec",
-        f"--onnx={onnx_path}",
+        f"--onnx={source}",
         f"--saveEngine={dest}",
         "--fp16",
     ], check=True)
     print(f"Saved to {dest}")
 
 
-def prepare_savant_phone_onnx():
-    """Prepare the Savant-owned ONNX source for the phone detector."""
-    print("Preparing Savant phone detector ONNX...")
-    dest = SAVANT_MODELS_DIR / "yolov8_phone" / "1" / "best.onnx"
+def prepare_yolo26_onnx():
+    """Prepare the Savant-owned ONNX source for the yolo26 person detector."""
+    print("Preparing yolo26 person detector ONNX...")
+    dest = SAVANT_MODELS_DIR / "yolo26" / "1" / "yolo26s.onnx"
     if onnx_artifact_ready(dest):
-        print(f"Skipping Savant phone detector ONNX; already present at {dest}")
+        print(f"Skipping yolo26 person detector ONNX; already present at {dest}")
         return
 
-    phone_source = resolve_phone_model_source()
-
-    source = PHONE_ONNX_SOURCE
-    source_ready = onnx_artifact_ready(source)
-    if source_ready:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, dest)
-        print(f"Saved to {dest}")
-        return
-
-    try:
-        from ultralytics import YOLO
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_pt = Path(temp_dir) / phone_source.name
-            shutil.copy2(phone_source, temp_pt)
-            model = YOLO(str(temp_pt))
-            model.export(
-                format="onnx",
-                imgsz=640,
-                batch=1,
-                device="cpu",
-            )
-            exported = temp_pt.with_suffix(".onnx")
-            if not exported.exists():
-                raise FileNotFoundError(f"Expected exported ONNX artifact was not created: {exported}")
-            shutil.copy2(exported, source)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, dest)
-            print(f"Saved to {dest}")
-            return
-    except Exception:
-        if not source_ready:
-            raise
-
+    source = export_onnx_from_pt_source(resolve_person_model_source(), PERSON_ONNX_SOURCE)
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, dest)
     print(f"Saved to {dest}")
 
 
-def prepare_savant_pose_onnx():
-    """Prepare the Savant-owned ONNX source for the pose detector."""
-    print("Preparing Savant pose detector ONNX...")
-    dest = SAVANT_MODELS_DIR / "pose_detetcion" / "1" / "yolo26s-pose.onnx"
+def export_phone_detection():
+    """Export the custom phone detection model to TensorRT."""
+    print("Exporting phone detection...")
+    dest = MODELS_DIR / "phone_detection" / "1" / "model.plan"
+    if artifact_ready(dest):
+        print(f"Skipping phone detection; already present at {dest}")
+        return
+
+    source = export_onnx_from_pt_source(resolve_phone_model_source(), PHONE_ONNX_SOURCE)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run([
+        "trtexec",
+        f"--onnx={source}",
+        f"--saveEngine={dest}",
+        "--fp16",
+    ], check=True)
+    print(f"Saved to {dest}")
+
+
+def prepare_phone_detection_onnx():
+    """Prepare the Savant-owned ONNX source for the custom phone detector."""
+    print("Preparing phone detection ONNX...")
+    dest = SAVANT_MODELS_DIR / "phone_detection" / "1" / "best.onnx"
     if onnx_artifact_ready(dest):
-        print(f"Skipping Savant pose detector ONNX; already present at {dest}")
+        print(f"Skipping phone detection ONNX; already present at {dest}")
         return
 
-    pose_source = resolve_pose_model_source()
-
-    source = POSE_ONNX_SOURCE
-    source_ready = onnx_artifact_ready(source)
-    if source_ready:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, dest)
-        print(f"Saved to {dest}")
-        return
-
-    try:
-        from ultralytics import YOLO
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_pt = Path(temp_dir) / pose_source.name
-            shutil.copy2(pose_source, temp_pt)
-            model = YOLO(str(temp_pt))
-            model.export(
-                format="onnx",
-                imgsz=640,
-                batch=1,
-                device="cpu",
-            )
-            exported = temp_pt.with_suffix(".onnx")
-            if not exported.exists():
-                raise FileNotFoundError(f"Expected exported ONNX artifact was not created: {exported}")
-            shutil.copy2(exported, source)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, dest)
-            print(f"Saved to {dest}")
-            return
-    except Exception:
-        if not source_ready:
-            raise
-
+    source = export_onnx_from_pt_source(resolve_phone_model_source(), PHONE_ONNX_SOURCE)
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, dest)
     print(f"Saved to {dest}")
+
+
+def export_yolo26_pose():
+    """Export yolo26 pose detection to TensorRT."""
+    print("Exporting yolo26 pose detection...")
+    dest = MODELS_DIR / "yolo26-pose" / "1" / "model.plan"
+    if artifact_ready(dest):
+        print(f"Skipping yolo26 pose detection; already present at {dest}")
+        return
+
+    source = export_onnx_from_pt_source(resolve_pose_model_source(), POSE_ONNX_SOURCE)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run([
+        "trtexec",
+        f"--onnx={source}",
+        f"--saveEngine={dest}",
+        "--fp16",
+    ], check=True)
+    print(f"Saved to {dest}")
+
+
+def prepare_yolo26_pose_onnx():
+    """Prepare the Savant-owned ONNX source for the yolo26 pose detector."""
+    print("Preparing yolo26 pose detector ONNX...")
+    dest = SAVANT_MODELS_DIR / "yolo26-pose" / "1" / "yolo26s-pose.onnx"
+    if onnx_artifact_ready(dest):
+        print(f"Skipping yolo26 pose detector ONNX; already present at {dest}")
+        return
+
+    source = export_onnx_from_pt_source(resolve_pose_model_source(), POSE_ONNX_SOURCE)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, dest)
+    print(f"Saved to {dest}")
+
+
+# Backward-compatible aliases for older callers.
+export_yolov8_person = export_yolo26
+prepare_savant_person_onnx = prepare_yolo26_onnx
+export_yolov8_phone = export_phone_detection
+prepare_savant_phone_onnx = prepare_phone_detection_onnx
+prepare_savant_pose_onnx = prepare_yolo26_pose_onnx
 
 
 def export_osnet():
@@ -505,38 +478,41 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model",
         choices=[
-            "yolov8_person",
-            "yolov8_phone",
-            "prepare_savant_pose_onnx",
+            "yolo26",
+            "phone_detection",
+            "yolo26-pose",
+            "prepare_yolo26_onnx",
+            "prepare_phone_detection_onnx",
+            "prepare_yolo26_pose_onnx",
             "arcface",
             "osnet",
             "scrfd",
-            "prepare_savant_person_onnx",
-            "prepare_savant_phone_onnx",
-            "yolo26s_pose",
         ],
     )
     parser.add_argument("--all", action="store_true")
     args = parser.parse_args()
 
     if args.all:
-        prepare_savant_person_onnx()
-        prepare_savant_phone_onnx()
-        prepare_savant_pose_onnx()
+        prepare_yolo26_onnx()
+        prepare_phone_detection_onnx()
+        prepare_yolo26_pose_onnx()
+        export_yolo26()
+        export_phone_detection()
+        export_yolo26_pose()
         export_arcface()
         export_osnet()
         export_scrfd()
     elif args.model:
         {
-            "yolov8_person": export_yolov8_person,
-            "yolov8_phone": export_yolov8_phone,
-            "prepare_savant_pose_onnx": prepare_savant_pose_onnx,
-            "yolo26s_pose": prepare_savant_pose_onnx,
+            "yolo26": export_yolo26,
+            "phone_detection": export_phone_detection,
+            "yolo26-pose": export_yolo26_pose,
+            "prepare_yolo26_onnx": prepare_yolo26_onnx,
+            "prepare_phone_detection_onnx": prepare_phone_detection_onnx,
+            "prepare_yolo26_pose_onnx": prepare_yolo26_pose_onnx,
             "arcface": export_arcface,
             "osnet": export_osnet,
             "scrfd": export_scrfd,
-            "prepare_savant_person_onnx": prepare_savant_person_onnx,
-            "prepare_savant_phone_onnx": prepare_savant_phone_onnx,
         }[args.model]()
     else:
         parser.print_help()

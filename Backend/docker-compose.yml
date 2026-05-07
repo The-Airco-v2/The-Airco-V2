@@ -138,7 +138,7 @@ services:
       - "8002:8002"
     volumes:
       - ./services/triton/models:/models
-    command: tritonserver --model-repository=/models --model-control-mode=explicit --load-model=arcface --load-model=osnet --load-model=scrfd --strict-model-config=false
+    command: tritonserver --model-repository=/models --model-control-mode=explicit --load-model=yolo26 --load-model=phone_detection --load-model=yolo26-pose --load-model=arcface --load-model=osnet --load-model=scrfd --strict-model-config=false
     deploy:
       resources:
         reservations:

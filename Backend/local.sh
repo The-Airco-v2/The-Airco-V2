@@ -63,7 +63,7 @@ case "${1:-}" in
     echo "Starting Airco Secure Backend (full GPU mode)..."
 
     echo ""
-    echo "Ensuring local Triton identity models are built for this GPU stack..."
+    echo "Ensuring local Triton models are built for this GPU stack..."
     bash "$DIR/scripts/ensure_local_triton_models.sh"
 
     echo ""

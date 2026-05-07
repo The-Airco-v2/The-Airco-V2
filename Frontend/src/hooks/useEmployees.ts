@@ -51,7 +51,18 @@ export function useFaceTrainingStatus(employeeId: string | null) {
     refetchInterval: (query) => {
       const data = query.state.data;
       if (!data) return false;
-      return data.state === "capturing" || data.state === "processing" ? 2000 : false;
+      if (
+        data.state === "capturing" ||
+        data.state === "uploading" ||
+        data.state === "embedding_processing" ||
+        data.state === "processing"
+      ) {
+        return 2000;
+      }
+      if (data.state === "failed") {
+        return 5000;
+      }
+      return false;
     },
   });
 }

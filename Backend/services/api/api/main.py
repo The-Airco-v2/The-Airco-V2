@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from airco.db import async_session
+from airco.minio_client import delete_objects_by_prefix
 from airco.models import Camera as CameraModel
 from api.routes import (
     sessions, cameras, persons, employees, attendance,
@@ -21,6 +22,7 @@ from api.routes import (
     analytics, exports, overview, exceptions, auth as auth_routes,
     identity_reviews,
 )
+from api.routes import system
 from api.routes.cameras import _go2rtc_add, _stream_name
 
 logger = logging.getLogger(__name__)
@@ -50,6 +52,7 @@ app.include_router(identity_reviews.router, prefix="/api/v2/identity-reviews", t
 app.include_router(exceptions.router, prefix="/api/v2/exceptions", tags=["exceptions"])
 app.include_router(employee_intelligence.router, prefix="/api/v2", tags=["employee-intelligence"])
 app.include_router(centrifugo_proxy.router, prefix="/api/v2/ws", tags=["websocket"])
+app.include_router(system.router, prefix="/api/v2", tags=["system"])
 app.include_router(auth_routes.router, prefix="/api/auth", tags=["auth"])
 
 
@@ -62,6 +65,8 @@ async def sync_cameras_to_go2rtc() -> None:
     regardless of go2rtc restart order.
     """
     try:
+        delete_objects_by_prefix("face-training-debug/")
+        delete_objects_by_prefix("employee-face-training/")
         async with async_session() as db:
             result = await db.execute(select(CameraModel))
             cams = result.scalars().all()

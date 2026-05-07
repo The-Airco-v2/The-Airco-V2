@@ -21,8 +21,8 @@ pipeline:
     - element: nvinfer@detector
       name: person_detector
       model:
-        local_path: /models/yolov8_person/1
-        model_file: yolov8n.onnx
+        local_path: /models/yolo26/1
+        model_file: yolo26s.onnx
         batch_size: 1
         precision: fp16
         input:
@@ -62,7 +62,7 @@ pipeline:
     - element: nvinfer@detector
       name: phone_detector
       model:
-        local_path: /models/yolov8_phone/1
+        local_path: /models/phone_detection/1
         model_file: best.onnx
         batch_size: 1
         precision: fp16

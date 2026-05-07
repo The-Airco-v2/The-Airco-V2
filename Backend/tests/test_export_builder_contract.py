@@ -44,12 +44,19 @@ def test_local_gpu_bootstrap_invokes_model_preflight():
     assert "./local.sh --gpu" not in helper_text
     assert "ensure_local_triton_models.sh" in local_text
     assert "ensure_local_savant_models.sh" in local_text
+    assert "./local.sh --gpu" not in helper_text
+    assert "ensure_local_triton_models.sh" in local_text
+    assert "ensure_local_savant_models.sh" in local_text
     assert "--model \"$model\"" in helper_text
+    assert "\"yolo26\"" in helper_text
+    assert "\"phone_detection\"" in helper_text
+    assert "\"yolo26-pose\"" in helper_text
     assert "\"arcface\"" in helper_text
     assert "\"osnet\"" in helper_text
     assert "gpu-full-ready" in helper_text
-    assert "\"prepare_savant_person_onnx\"" in savant_helper_text
-    assert "\"prepare_savant_phone_onnx\"" in savant_helper_text
+    assert "\"prepare_phone_detection_onnx\"" in savant_helper_text
+    assert "\"prepare_yolo26_onnx\"" in savant_helper_text
+    assert "\"prepare_yolo26_pose_onnx\"" in savant_helper_text
     assert "services/savant-pipeline/models" in savant_helper_text
 
 
@@ -67,7 +74,9 @@ def test_phone_export_uses_trtexec_without_explicit_shapes_for_static_onnx(tmp_p
     models_dir = tmp_path / "models"
 
     monkeypatch.setattr(module, "PHONE_MODEL_SOURCE", phone_source)
+    monkeypatch.setattr(module, "PHONE_ONNX_SOURCE", phone_onnx)
     monkeypatch.setattr(module, "MODELS_DIR", models_dir)
+    monkeypatch.setattr(module, "export_onnx_from_pt_source", lambda *_args, **_kwargs: phone_onnx)
 
     fake_ultralytics = SimpleNamespace(YOLO=lambda *_args, **_kwargs: SimpleNamespace(export=lambda **_kw: None))
     monkeypatch.setitem(sys.modules, "ultralytics", fake_ultralytics)
@@ -81,7 +90,7 @@ def test_phone_export_uses_trtexec_without_explicit_shapes_for_static_onnx(tmp_p
 
     monkeypatch.setattr(module.subprocess, "run", fake_run)
 
-    module.export_yolov8_phone()
+    module.export_phone_detection()
 
     assert len(calls) == 1
     assert all(
@@ -200,7 +209,7 @@ def test_osnet_export_uses_legacy_torch_onnx_exporter(tmp_path, monkeypatch):
     assert len(calls) == 1
 
 
-def test_prepare_savant_phone_onnx_exports_from_pt_source(tmp_path, monkeypatch):
+def test_prepare_phone_detection_onnx_exports_from_pt_source(tmp_path, monkeypatch):
     script_path = Path(__file__).resolve().parent.parent / "scripts" / "export_tensorrt.py"
     spec = importlib.util.spec_from_file_location("export_tensorrt_script", script_path)
     module = importlib.util.module_from_spec(spec)
@@ -210,9 +219,12 @@ def test_prepare_savant_phone_onnx_exports_from_pt_source(tmp_path, monkeypatch)
     phone_source = tmp_path / "best.pt"
     phone_source.write_text("weights", encoding="utf-8")
     savant_models_dir = tmp_path / "savant-models"
+    phone_onnx = tmp_path / "best.onnx"
 
     monkeypatch.setattr(module, "PHONE_MODEL_SOURCE", phone_source)
+    monkeypatch.setattr(module, "PHONE_ONNX_SOURCE", phone_onnx)
     monkeypatch.setattr(module, "SAVANT_MODELS_DIR", savant_models_dir)
+    monkeypatch.setattr(module, "export_onnx_from_pt_source", lambda *_args, **_kwargs: phone_onnx)
 
     class FakeYOLO:
         def __init__(self, model_path: str):
@@ -223,7 +235,11 @@ def test_prepare_savant_phone_onnx_exports_from_pt_source(tmp_path, monkeypatch)
 
     monkeypatch.setitem(sys.modules, "ultralytics", types.SimpleNamespace(YOLO=FakeYOLO))
 
-    module.prepare_savant_phone_onnx()
+    phone_onnx = tmp_path / "best.onnx"
+    monkeypatch.setattr(module, "PHONE_ONNX_SOURCE", phone_onnx)
+    monkeypatch.setattr(module, "export_onnx_from_pt_source", lambda *_args, **_kwargs: phone_onnx)
 
-    exported = savant_models_dir / "yolov8_phone" / "1" / "best.onnx"
+    module.prepare_phone_detection_onnx()
+
+    exported = savant_models_dir / "phone_detection" / "1" / "best.onnx"
     assert exported.read_bytes() == b"phone-onnx"

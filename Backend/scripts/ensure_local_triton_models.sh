@@ -5,8 +5,11 @@ DIR="$(cd "$(dirname "$0")/.." && pwd)"
 MODELS_DIR="$DIR/services/triton/models"
 STAMP_DIR="$MODELS_DIR/.local-build"
 STAMP_FILE="$STAMP_DIR/gpu-full-ready"
-BUILDER_VERSION="triton-24.08-identity-v5"
+BUILDER_VERSION="triton-24.08-models-v2"
 REQUIRED_MODELS=(
+  "yolo26"
+  "phone_detection"
+  "yolo26-pose"
   "arcface"
   "osnet"
   "scrfd"
@@ -14,7 +17,7 @@ REQUIRED_MODELS=(
 
 mkdir -p "$STAMP_DIR"
 
-echo "Preparing local Triton identity models for gpu-full..."
+echo "Preparing local Triton models for gpu-full..."
 
 ensure_model() {
   local model="$1"
@@ -33,7 +36,7 @@ ensure_model() {
 }
 
 SCRFD_ARTIFACT="$MODELS_DIR/scrfd/1/model.plan"
-if [[ -f "$STAMP_FILE" ]] && grep -qx "$BUILDER_VERSION" "$STAMP_FILE" && [[ -s "$SCRFD_ARTIFACT" ]]; then
+if [[ -f "$STAMP_FILE" ]] && grep -qx "$BUILDER_VERSION" "$STAMP_FILE"; then
   ALL_CURRENT=true
   for model in "${REQUIRED_MODELS[@]}"; do
     if [[ ! -s "$MODELS_DIR/$model/1/model.plan" ]] || [[ ! -f "$STAMP_DIR/$model.ready" ]] || ! grep -qx "$BUILDER_VERSION" "$STAMP_DIR/$model.ready"; then

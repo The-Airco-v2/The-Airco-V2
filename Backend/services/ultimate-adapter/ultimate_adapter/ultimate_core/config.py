@@ -5,11 +5,11 @@ from typing import Any, Mapping
 
 
 DEFAULT_ULTIMATE_CORE_CONFIG: dict[str, Any] = {
-    "det_model": "yolo11s.pt",
+    "det_model": "yolo26",
     "det_conf": 0.30,
     "det_iou": 0.35,
     "det_classes": [0],
-    "det_imgsz": 960,
+    "det_imgsz": 640,
     "reid_model": "osnet_x0_25_msmt17.pt",
     "ema_alpha": 0.35,
     "min_hits": 1,

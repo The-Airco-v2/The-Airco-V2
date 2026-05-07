@@ -252,6 +252,8 @@ async def face_training_start(
         tenant_id=auth.tenant_id,
         employee_id=employee_id,
         camera_id=body.camera_id,
+        camera_name=body.camera_name,
+        employee_name=body.employee_name,
         replace_existing=body.replace_existing,
         target_frames=body.target_frames,
         duration_seconds=body.duration_seconds,

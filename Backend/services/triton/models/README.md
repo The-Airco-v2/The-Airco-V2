@@ -16,10 +16,14 @@ It is intentionally split into:
 
 ## Triton-served models
 
-1. `arcface`
-2. `osnet`
+1. `yolo26`
+2. `phone_detection`
+3. `yolo26-pose`
+4. `scrfd`
+5. `arcface`
+6. `osnet`
 
-Detector artifacts for Savant live under `v2/services/savant-pipeline/models`.
+The detector runtime artifacts are intentionally kept in the Triton repository so they can be loaded explicitly in GPU mode.
 
 ## Artifact contract
 
@@ -40,6 +44,6 @@ The `.gitkeep` files preserve the repository layout, but they are not valid infe
 
 ## Current status
 
-Runtime configs exist for the Triton-served identity models.
+Runtime configs exist for the Triton-served detector and identity models.
 
-Until `arcface/1/model.plan` and `osnet/1/model.plan` exist, Triton can start as a process but cannot serve real identity inference.
+Until the listed `1/model.plan` artifacts exist, Triton can start as a process but cannot serve real inference for that model.

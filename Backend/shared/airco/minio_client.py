@@ -83,6 +83,27 @@ def upload_employee_face(
     return prefixed_object_name
 
 
+def upload_employee_asset(
+    object_name: str,
+    data: bytes,
+    content_type: str = "application/octet-stream",
+) -> str:
+    """Upload an arbitrary employee training artifact to airco-employee bucket."""
+    client = get_minio()
+    if not client.bucket_exists(EMPLOYEE_BUCKET_NAME):
+        client.make_bucket(EMPLOYEE_BUCKET_NAME)
+
+    prefixed_object_name = object_name.lstrip("/")
+    client.put_object(
+        EMPLOYEE_BUCKET_NAME,
+        prefixed_object_name,
+        io.BytesIO(data),
+        length=len(data),
+        content_type=content_type,
+    )
+    return prefixed_object_name
+
+
 def delete_employee_face(object_name: str) -> None:
     """Delete employee face image from airco-employee bucket."""
     client = get_minio()

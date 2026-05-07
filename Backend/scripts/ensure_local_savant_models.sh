@@ -7,9 +7,9 @@ STAMP_DIR="$MODELS_DIR/.local-build"
 STAMP_FILE="$STAMP_DIR/gpu-detectors-ready"
 BUILDER_VERSION="savant-detectors-v3"
 REQUIRED_MODELS=(
-  "prepare_savant_person_onnx"
-  "prepare_savant_phone_onnx"
-  "prepare_savant_pose_onnx"
+  "prepare_yolo26_onnx"
+  "prepare_phone_detection_onnx"
+  "prepare_yolo26_pose_onnx"
 )
 
 mkdir -p "$STAMP_DIR"
@@ -33,14 +33,14 @@ if [[ -f "$STAMP_FILE" ]] && grep -qx "$BUILDER_VERSION" "$STAMP_FILE"; then
   all_current=true
   for model in "${REQUIRED_MODELS[@]}"; do
     case "$model" in
-      prepare_savant_person_onnx)
-        artifact="$MODELS_DIR/yolov8_person/1/yolov8n.onnx"
+      prepare_yolo26_onnx)
+        artifact="$MODELS_DIR/yolo26/1/yolo26s.onnx"
         ;;
-      prepare_savant_phone_onnx)
-        artifact="$MODELS_DIR/yolov8_phone/1/best.onnx"
+      prepare_phone_detection_onnx)
+        artifact="$MODELS_DIR/phone_detection/1/best.onnx"
         ;;
-      prepare_savant_pose_onnx)
-        artifact="$MODELS_DIR/pose_detetcion/1/yolo26s-pose.onnx"
+      prepare_yolo26_pose_onnx)
+        artifact="$MODELS_DIR/yolo26-pose/1/yolo26s-pose.onnx"
         ;;
     esac
 
@@ -63,14 +63,14 @@ ensure_model() {
   local model_stamp="$STAMP_DIR/$model.ready"
 
   case "$model" in
-    prepare_savant_person_onnx)
-      local artifact="$MODELS_DIR/yolov8_person/1/yolov8n.onnx"
+    prepare_yolo26_onnx)
+      local artifact="$MODELS_DIR/yolo26/1/yolo26s.onnx"
       ;;
-    prepare_savant_phone_onnx)
-      local artifact="$MODELS_DIR/yolov8_phone/1/best.onnx"
+    prepare_phone_detection_onnx)
+      local artifact="$MODELS_DIR/phone_detection/1/best.onnx"
       ;;
-    prepare_savant_pose_onnx)
-      local artifact="$MODELS_DIR/pose_detetcion/1/yolo26s-pose.onnx"
+    prepare_yolo26_pose_onnx)
+      local artifact="$MODELS_DIR/yolo26-pose/1/yolo26s-pose.onnx"
       ;;
     *)
       echo "Unknown Savant model target: $model" >&2

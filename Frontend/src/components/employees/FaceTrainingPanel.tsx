@@ -11,6 +11,7 @@ import {
   useFaceTrainingStatus,
   useStartFaceTraining,
 } from "@/hooks/useEmployees";
+import { useFaceTrainingMetrics, useFaceTrainingPreview, useSystemHealth } from "@/hooks/useSystem";
 import type { Employee, FaceTrainingStartPayload, FaceTrainingStatus } from "@/types";
 import { toast } from "sonner";
 
@@ -32,8 +33,11 @@ function statusMessage(status: FaceTrainingStatus | undefined) {
       return "No training in progress. Select an employee and click Start Training to begin.";
     case "capturing":
       return "Capturing high-quality face samples from the selected camera.";
+    case "uploading":
+      return "Uploading approved samples to MinIO.";
+    case "embedding_processing":
     case "processing":
-      return "Processing embeddings and writing the employee template set.";
+      return "Generating ArcFace embeddings and storing them in PostgreSQL.";
     case "completed":
       return "Training completed successfully. The new embeddings are active for recognition.";
     case "failed":
@@ -49,27 +53,104 @@ function progressWidth(status: FaceTrainingStatus | undefined) {
   return `${Math.min(100, Math.max(0, status?.progress ?? 0))}%`;
 }
 
-function bboxStyle(bbox: number[] | null | undefined) {
-  if (!bbox || bbox.length !== 4) {
-    return null;
+function stageLabel(status: FaceTrainingStatus | undefined) {
+  switch (status?.state) {
+    case "capturing":
+      return "Capturing";
+    case "uploading":
+      return "Uploading to MinIO";
+    case "embedding_processing":
+    case "processing":
+      return "Generating Embeddings";
+    case "completed":
+      return "Completed";
+    case "failed":
+      return "Failed";
+    case "cancelled":
+      return "Cancelled";
+    default:
+      return "Idle";
   }
-
-  const [x1, y1, x2, y2] = bbox;
-  return {
-    left: `${x1 * 100}%`,
-    top: `${y1 * 100}%`,
-    width: `${Math.max(0, (x2 - x1) * 100)}%`,
-    height: `${Math.max(0, (y2 - y1) * 100)}%`,
-  };
 }
 
-function FaceTrainingStatusCard({ status }: { status?: FaceTrainingStatus }) {
+function stageItems(status: FaceTrainingStatus | undefined) {
+  const isCapturing = status?.state === "capturing" || status?.state === "uploading" || status?.state === "embedding_processing" || status?.state === "processing" || status?.state === "completed";
+  const isUploaded = status?.uploaded_frames ?? 0;
+  const isEmbedded = status?.embedded_frames ?? 0;
+  return [
+    { label: "Camera Connected", done: !!status && status.state !== "idle" },
+    { label: "Face Detection Active", done: isCapturing },
+    { label: "Quality Validation", done: (status?.captured_frames ?? 0) > 0 || isCapturing },
+    { label: "Uploading to MinIO", done: isUploaded > 0 || status?.state === "uploading" || status?.state === "embedding_processing" || status?.state === "completed" },
+    { label: "Embedding Generation", done: isEmbedded > 0 || status?.state === "embedding_processing" || status?.state === "completed" },
+    { label: "PostgreSQL Storage", done: status?.state === "completed" },
+    { label: "Completed", done: status?.state === "completed" },
+  ];
+}
+
+function pipelineSectionTitle(status: FaceTrainingStatus | undefined) {
+  return status?.state === "completed"
+    ? "Training complete"
+    : status?.state === "failed"
+      ? "Training failed"
+      : status?.state === "cancelled"
+        ? "Training cancelled"
+        : "Training pipeline";
+}
+
+function countBar(label: string, value: number, total: number, tone: string) {
+  const pct = total > 0 ? Math.min(100, Math.round((value / total) * 100)) : 0;
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between text-xs text-zinc-400">
+        <span>{label}</span>
+        <span>{value} / {total}</span>
+      </div>
+      <div className="h-2 overflow-hidden rounded-full bg-zinc-800">
+        <div className={`h-full rounded-full ${tone}`} style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function PreviewTile({ label, image }: { label: string; image: string | null | undefined }) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950">
+      <div className="border-b border-zinc-800 px-3 py-2 text-xs uppercase tracking-wide text-zinc-500">{label}</div>
+      <div className="flex aspect-square items-center justify-center bg-black">
+        {image ? (
+          <img src={`data:image/jpeg;base64,${image}`} alt={label} className="h-full w-full object-cover" />
+        ) : (
+          <span className="text-xs text-zinc-600">No preview available</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FaceTrainingStatusCard({
+  status,
+  preview,
+}: {
+  status?: FaceTrainingStatus;
+  preview?: {
+    current_face_image: string | null;
+    last_accepted_image: string | null;
+    last_rejected_image: string | null;
+    rejection_reason: string | null;
+  };
+}) {
+  const pipeline = stageItems(status);
+  const target = status?.target_frames ?? DEFAULT_TARGET_FRAMES;
   return (
     <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-4">
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-sm font-semibold text-zinc-100">Training Status</p>
           <p className="mt-1 text-sm text-zinc-400">{statusMessage(status)}</p>
+          <p className="mt-2 text-xs uppercase tracking-wide text-zinc-500">
+            {pipelineSectionTitle(status)} · {stageLabel(status)}
+          </p>
         </div>
         <StatusBadge
           status={
@@ -79,8 +160,10 @@ function FaceTrainingStatusCard({ status }: { status?: FaceTrainingStatus }) {
                 ? "untrained"
                 : status?.state === "cancelled"
                   ? "stopped"
-                  : status?.state === "capturing" || status?.state === "processing"
+                  : status?.state === "capturing"
                     ? "running"
+                    : status?.state === "uploading" || status?.state === "embedding_processing" || status?.state === "processing"
+                      ? "working"
                     : "unknown"
           }
         />
@@ -90,27 +173,55 @@ function FaceTrainingStatusCard({ status }: { status?: FaceTrainingStatus }) {
         <div className="h-full rounded-full bg-sky-500 transition-all" style={{ width: progressWidth(status) }} />
       </div>
 
-      <div className="mt-4 grid grid-cols-2 gap-3 text-xs text-zinc-400 sm:grid-cols-4">
-        <Metric label="Processed" value={`${status?.captured_frames ?? 0} / ${status?.target_frames ?? DEFAULT_TARGET_FRAMES}`} />
-        <Metric label="Accepted" value={`${status?.accepted_frames ?? 0}`} />
-        <Metric label="Rejected" value={`${status?.rejected_frames ?? 0}`} />
-        <Metric label="Progress" value={`${status?.progress ?? 0}%`} />
+      <div className="mt-4 grid grid-cols-1 gap-3 text-xs text-zinc-400 sm:grid-cols-2 xl:grid-cols-4">
+        <Metric label="Capture Progress" value={`${status?.captured_frames ?? 0} / ${target}`} />
+        <Metric label="Upload Progress" value={`${status?.uploaded_frames ?? 0} / ${status?.accepted_frames ?? 0}`} />
+        <Metric label="Embedding Progress" value={`${status?.embedded_frames ?? 0} / ${status?.accepted_frames ?? 0}`} />
+        <Metric label="Overall Progress" value={`${status?.progress ?? 0}%`} />
       </div>
 
-      <div className="mt-3 grid grid-cols-1 gap-3 text-xs text-zinc-400 sm:grid-cols-3">
+      <div className="mt-4 grid gap-3">
+        {countBar("Captured", status?.captured_frames ?? 0, target, "bg-sky-500")}
+        {countBar("Accepted", status?.accepted_frames ?? 0, target, "bg-emerald-500")}
+        {countBar("Rejected", status?.rejected_frames ?? 0, target, "bg-rose-500")}
+        {countBar("Uploaded to MinIO", status?.uploaded_frames ?? 0, Math.max(status?.accepted_frames ?? 0, 1), "bg-cyan-500")}
+        {countBar("Embeddings Stored", status?.embedded_frames ?? 0, Math.max(status?.accepted_frames ?? 0, 1), "bg-violet-500")}
+      </div>
+
+      <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-900 p-3">
+        <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Pipeline Stages</p>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {pipeline.map((item) => (
+            <div key={item.label} className="rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs text-zinc-300">
+              <span className={`mr-2 inline-flex h-2 w-2 rounded-full ${item.done ? "bg-emerald-400" : "bg-zinc-600"}`} />
+              {item.label}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-4 grid grid-cols-1 gap-3 text-xs text-zinc-400 sm:grid-cols-3">
         <Metric label="Detector faces" value={`${status?.detector_face_count ?? 0}`} />
         <Metric label="Confidence" value={status?.detector_confidence != null ? status.detector_confidence.toFixed(3) : "—"} />
         <Metric label="Debug" value={status?.debug_mode ? "On" : "Off"} />
       </div>
 
-      <p className="mt-3 text-xs leading-5 text-zinc-500">
-        Processed means every frame the worker attempted to use. Rejected frames did not pass the face-quality
-        filters, so they are not stored as training samples.
-      </p>
-
       <p className="mt-2 text-xs leading-5 text-zinc-500">
         Current detector note: <span className="text-zinc-300">{status?.rejection_reason ?? "No rejection on latest frame"}</span>
       </p>
+
+      <p className="mt-2 text-xs leading-5 text-zinc-500">
+        Uploads are stored in MinIO and embeddings are persisted in PostgreSQL after the capture phase completes.
+      </p>
+
+      <div className="mt-4 grid gap-3 md:grid-cols-3">
+        <PreviewTile label="Current Face" image={preview?.current_face_image} />
+        <PreviewTile label="Last Accepted" image={preview?.last_accepted_image} />
+        <PreviewTile
+          label={preview?.rejection_reason ? `Last Rejected (${preview.rejection_reason})` : "Last Rejected"}
+          image={preview?.last_rejected_image}
+        />
+      </div>
 
       {status && status.state === "capturing" && status.accepted_frames === 0 && status.rejected_frames > 0 && (
         <Alert variant="default" className="mt-4 border-amber-500/30 bg-amber-500/10 text-amber-100">
@@ -124,12 +235,21 @@ function FaceTrainingStatusCard({ status }: { status?: FaceTrainingStatus }) {
 
       <div className="mt-4 flex flex-wrap gap-2">
         {ANGLES.map((angle) => (
-          <span
+          <div
             key={angle}
-            className="rounded-full border border-zinc-800 bg-zinc-900 px-2.5 py-1 text-xs capitalize text-zinc-300"
+            className="min-w-24 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs capitalize text-zinc-300"
           >
-            {angle}: {status?.angle_coverage?.[angle] ?? 0}
-          </span>
+            <div className="flex items-center justify-between gap-3">
+              <span>{angle}</span>
+              <span className="text-zinc-100">{status?.angle_coverage?.[angle] ?? 0}</span>
+            </div>
+            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-zinc-800">
+              <div
+                className="h-full rounded-full bg-sky-400"
+                style={{ width: `${Math.min(100, ((status?.angle_coverage?.[angle] ?? 0) / Math.max(status?.accepted_frames ?? 1, 1)) * 100)}%` }}
+              />
+            </div>
+          </div>
         ))}
       </div>
 
@@ -153,6 +273,8 @@ function Metric({ label, value }: { label: string; value: string }) {
 
 export function FaceTrainingPanel({ employees }: { employees: Employee[] | undefined }) {
   const { data: cameras } = useCameras();
+  const { data: systemHealth } = useSystemHealth();
+  const { data: metrics } = useFaceTrainingMetrics();
   const [employeeId, setEmployeeId] = useState<string>("");
   const [cameraId, setCameraId] = useState<string>("");
   const [debugMode, setDebugMode] = useState(false);
@@ -172,10 +294,15 @@ export function FaceTrainingPanel({ employees }: { employees: Employee[] | undef
 
   const statusQuery = useFaceTrainingStatus(employeeId || null);
   const status = statusQuery.data;
+  const previewQuery = useFaceTrainingPreview(status?.job_id ?? null);
+  const preview = previewQuery.data;
   const startTraining = useStartFaceTraining();
   const cancelTraining = useCancelFaceTraining();
-  const isActive = status?.state === "capturing" || status?.state === "processing";
-  const currentFaceBoxStyle = bboxStyle(status?.detector_bbox);
+  const isActive =
+    status?.state === "capturing" ||
+    status?.state === "uploading" ||
+    status?.state === "embedding_processing" ||
+    status?.state === "processing";
 
   useEffect(() => {
     if (!status?.job_id || !status.state) {
@@ -214,13 +341,24 @@ export function FaceTrainingPanel({ employees }: { employees: Employee[] | undef
 
   useEffect(() => {
     const firstCameraId = cameras?.[0]?.id ?? "";
+    const lockCameraToJob =
+      status?.state === "capturing" ||
+      status?.state === "uploading" ||
+      status?.state === "embedding_processing" ||
+      status?.state === "processing";
+    if (lockCameraToJob && status?.camera_id) {
+      if (cameraId !== status.camera_id) {
+        setCameraId(status.camera_id);
+      }
+      return;
+    }
     if (!cameraId && firstCameraId) {
       setCameraId(firstCameraId);
     }
     if (cameraId && !(cameras ?? []).some((camera) => camera.id === cameraId)) {
       setCameraId(firstCameraId);
     }
-  }, [cameras, cameraId]);
+  }, [cameras, cameraId, status?.camera_id, status?.state]);
 
   const start = (replaceExistingValue: boolean) => {
     if (!employeeId) {
@@ -231,9 +369,19 @@ export function FaceTrainingPanel({ employees }: { employees: Employee[] | undef
       toast.error("Select a camera first");
       return;
     }
+    if (!selectedEmployee) {
+      toast.error("Selected employee is not available yet");
+      return;
+    }
+    if (!selectedCamera) {
+      toast.error("Selected camera is not available yet");
+      return;
+    }
 
     const payload: FaceTrainingStartPayload = {
       camera_id: cameraId,
+      camera_name: selectedCamera?.name ?? "",
+      employee_name: selectedEmployee?.name ?? "",
       replace_existing: replaceExistingValue,
       target_frames: DEFAULT_TARGET_FRAMES,
       duration_seconds: DEFAULT_DURATION_SECONDS,
@@ -285,6 +433,27 @@ export function FaceTrainingPanel({ employees }: { employees: Employee[] | undef
 
       <div className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
         <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-950 p-4">
+          <div className="grid gap-3 sm:grid-cols-4">
+            <Metric label="SCRFD" value={systemHealth?.triton.status === "online" ? "Online" : systemHealth?.triton.status ?? "—"} />
+            <Metric label="MinIO" value={systemHealth?.minio.status === "online" ? "Online" : systemHealth?.minio.status ?? "—"} />
+            <Metric label="PostgreSQL" value={systemHealth?.postgresql.status === "online" ? "Online" : systemHealth?.postgresql.status ?? "—"} />
+            <Metric label="Workers Active" value={`${metrics?.workers_active ?? 0}`} />
+          </div>
+
+          <div className="rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs text-zinc-400">
+            <span className="font-medium text-zinc-200">Triton models:</span>{" "}
+            {systemHealth?.triton.models_ready?.length ? systemHealth.triton.models_ready.join(", ") : "none ready"}
+            {systemHealth?.triton.models_unready?.length ? (
+              <span className="text-amber-300"> · missing: {systemHealth.triton.models_unready.join(", ")}</span>
+            ) : null}
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            <Metric label="Queue Depth" value={`${metrics?.queue_depth ?? 0}`} />
+            <Metric label="Avg Embed Time" value={`${metrics?.average_embedding_ms?.toFixed(1) ?? "0.0"} ms`} />
+            <Metric label="Images Uploaded" value={`${metrics?.images_uploaded ?? 0}`} />
+          </div>
+
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label className="text-zinc-300">Select Employee</Label>
@@ -304,7 +473,7 @@ export function FaceTrainingPanel({ employees }: { employees: Employee[] | undef
 
             <div className="space-y-2">
               <Label className="text-zinc-300">Select Camera</Label>
-              <Select value={cameraId} onValueChange={setCameraId}>
+              <Select value={cameraId} onValueChange={setCameraId} disabled={isActive}>
                 <SelectTrigger className="border-zinc-700 bg-zinc-900 text-zinc-50">
                   <SelectValue placeholder="-- Choose Camera --" />
                 </SelectTrigger>
@@ -377,18 +546,11 @@ export function FaceTrainingPanel({ employees }: { employees: Employee[] | undef
 
               <div className="pointer-events-none absolute inset-0 rounded-xl border-2 border-sky-400/35" />
 
-              {currentFaceBoxStyle && (
-                <div
-                  className="pointer-events-none absolute rounded-md border-2 border-emerald-400/90 bg-emerald-400/10 shadow-[0_0_0_1px_rgba(16,185,129,0.25)]"
-                  style={currentFaceBoxStyle}
-                />
-              )}
-
               <div className="pointer-events-none absolute inset-0 flex flex-col justify-between p-4 text-white">
                 <div className="flex items-start justify-end gap-3">
                   <div className="space-y-2 text-right">
                     <div className="rounded-full border border-white/10 bg-black/40 px-3 py-1.5 text-xs backdrop-blur-sm">
-                      {status?.state === "capturing" || status?.state === "processing"
+                      {status?.state === "capturing" || status?.state === "uploading" || status?.state === "embedding_processing" || status?.state === "processing"
                         ? "Training Active"
                         : "Preview Mode"}
                     </div>
@@ -456,7 +618,7 @@ export function FaceTrainingPanel({ employees }: { employees: Employee[] | undef
           </Alert>
         </div>
 
-        <FaceTrainingStatusCard status={status} />
+        <FaceTrainingStatusCard status={status} preview={preview} />
       </div>
     </section>
   );
