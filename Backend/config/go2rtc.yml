@@ -6,7 +6,7 @@ streams:
   cam5: "rtsp://admin:Vijay%405458@106.201.242.96:8554/Streaming/Channels/501"
   cam6: "rtsp://admin:Vijay%405458@106.201.242.96:8554/Streaming/Channels/601"
   active_session:
-    - rtsp://admin:Vijay%405458@106.201.242.31:8554/Streaming/Channels/301
+    - rtsp://admin:Vijay%405458@106.201.242.31:8554/Streaming/Channels/101
   cabin:
     - rtsp://admin:Vijay%405458@airco-office.ddns.net:8554/Streaming/Channels/101
   session_0fff68fe_0258_4b92_94b8_7e37fae801ba_52b16c02_89d6_41b1_b9a2_52bfc8d89e80:
