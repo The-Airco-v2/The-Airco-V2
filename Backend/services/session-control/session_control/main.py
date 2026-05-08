@@ -34,6 +34,8 @@ ACTIVE_STREAM = "active_session"
 READY_FILE = Path("/tmp/session-control-ready")
 GO2RTC_URL = os.getenv("GO2RTC_URL", "http://host.docker.internal:1984")
 ACTIVE_CAMERA_IDS_KEY = "airco:local:active_camera_ids"
+GO2RTC_FORCE_H264 = os.getenv("GO2RTC_FORCE_H264", "false").strip().lower() in {"1", "true", "yes", "on"}
+GO2RTC_H264_SUFFIX = os.getenv("GO2RTC_H264_SUFFIX", "#video=h264")
 
 
 def _parse_cameras(fields: dict[str, Any]) -> list[dict[str, Any]]:
@@ -86,6 +88,13 @@ def _resolve_rtsp_url(rtsp_url: str) -> str:
     return rtsp_url
 
 
+def _go2rtc_source(rtsp_url: str) -> str:
+    resolved = _resolve_rtsp_url(rtsp_url)
+    if not GO2RTC_FORCE_H264 or resolved.startswith("ffmpeg:"):
+        return resolved
+    return f"ffmpeg:{resolved}{GO2RTC_H264_SUFFIX}"
+
+
 def _bootstrap_rtsp(streams: dict[str, Any]) -> str | None:
     for stream_name, config in streams.items():
         if stream_name == ACTIVE_STREAM or not isinstance(config, dict):
@@ -125,7 +134,7 @@ def _stream_matches_rtsp(streams: dict[str, Any], rtsp_url: str) -> bool:
 
 
 async def _set_active_stream(client: httpx.AsyncClient, rtsp_url: str) -> None:
-    resolved_rtsp_url = _resolve_rtsp_url(rtsp_url)
+    resolved_rtsp_url = _go2rtc_source(rtsp_url)
     response = await client.put(
         f"{GO2RTC_URL}/api/streams",
         params={"name": ACTIVE_STREAM, "src": resolved_rtsp_url},
@@ -145,7 +154,7 @@ async def _set_session_camera_stream(
     camera_id: Any,
     rtsp_url: str,
 ) -> None:
-    resolved_rtsp_url = _resolve_rtsp_url(rtsp_url)
+    resolved_rtsp_url = _go2rtc_source(rtsp_url)
     stream_name = _session_camera_stream_name(session_id, camera_id)
     response = await client.put(
         f"{GO2RTC_URL}/api/streams",

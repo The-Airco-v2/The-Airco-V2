@@ -24,14 +24,15 @@ x-shared-env: &shared-env
   CENTRIFUGO_TOKEN_SECRET: ${CENTRIFUGO_TOKEN_SECRET:-localdev-centrifugo-token-secret-0123456789}
   TRITON_URL: triton:8001
   TENANT_ID: ${TENANT_ID:-default}
-  SUPABASE_URL: ${SUPABASE_URL}
-  SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
-  SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
   SESSION_SECRET: ${SESSION_SECRET:-localdev-session-secret-0123456789}
   SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-airco_session}
   SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-604800}
   SESSION_SECURE_COOKIE: ${SESSION_SECURE_COOKIE:-false}
   SESSION_SAME_SITE: ${SESSION_SAME_SITE:-lax}
+
+x-local-env-file: &local-env-file
+  env_file:
+    - ./.env.local
 
 services:
   # ── Infrastructure ───────────────────────────────────────
@@ -131,6 +132,7 @@ services:
   # ── Application API ──────────────────────────────────────
 
   api:
+    <<: *local-env-file
     build:
       context: .
       dockerfile: services/api/Dockerfile
@@ -170,6 +172,7 @@ services:
       retries: 10
 
   identity-consumer:
+    <<: *local-env-file
     profiles: [gpu-full]
     build:
       context: .
@@ -185,6 +188,7 @@ services:
         condition: service_healthy
 
   analytics-consumer:
+    <<: *local-env-file
     profiles: [gpu, gpu-full]
     build:
       context: .
@@ -198,6 +202,7 @@ services:
         condition: service_healthy
 
   snapshot-consumer:
+    <<: *local-env-file
     profiles: [gpu, gpu-full]
     build:
       context: .
@@ -211,6 +216,7 @@ services:
         condition: service_healthy
 
   session-control:
+    <<: *local-env-file
     profiles: [gpu, gpu-full]
     build:
       context: .
@@ -218,6 +224,8 @@ services:
     environment:
       <<: *shared-env
       GO2RTC_URL: http://go2rtc:1984
+      GO2RTC_FORCE_H264: ${GO2RTC_FORCE_H264:-true}
+      GO2RTC_H264_SUFFIX: "${GO2RTC_H264_SUFFIX:-#video=h264}"
     depends_on:
       redis:
         condition: service_healthy
@@ -232,6 +240,7 @@ services:
       retries: 20
 
   ws-publisher:
+    <<: *local-env-file
     profiles: [gpu, gpu-full]
     build:
       context: .
@@ -243,6 +252,7 @@ services:
         condition: service_healthy
 
   ultimate-adapter:
+    <<: *local-env-file
     profiles: [gpu, gpu-full]
     build:
       context: .
@@ -251,6 +261,7 @@ services:
       <<: *shared-env
       GO2RTC_RTSP_BASE_URL: rtsp://go2rtc:8556
       ULTIMATE_DET_MODEL_PATH: yolo26
+      ULTIMATE_REID_MODEL_PATH: osnet
       ULTIMATE_DEVICE: ${ULTIMATE_DEVICE:-cuda:0}
     volumes:
       - ${ULTIMATE_POC_PATH:-../Ultimate-Tracker}:/ultimate-poc:ro
@@ -268,8 +279,11 @@ services:
         condition: service_healthy
       api:
         condition: service_started
+      triton:
+        condition: service_healthy
 
   savant-pipeline:
+    <<: *local-env-file
     profiles: [gpu-full]
     build:
       context: ./services/savant-pipeline
@@ -280,7 +294,7 @@ services:
       <<: *shared-env
       ZMQ_SRC_ENDPOINT: router+bind:tcp://0.0.0.0:5000
       ZMQ_SINK_ENDPOINT: ""
-      USE_SCRFD: ${USE_SCRFD:-true}
+      USE_SCRFD: ${USE_SCRFD:-false}
       SCRFD_ONNX_PATH: /models/scrfd/det_10g.onnx
     volumes:
       - ./services/savant-pipeline:/opt/savant/module
@@ -297,8 +311,16 @@ services:
         condition: service_healthy
       session-control:
         condition: service_healthy
+      triton:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1', 5000)); s.close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
   savant-feeder:
+    <<: *local-env-file
     profiles: [gpu, gpu-full]
     build:
       context: .
@@ -314,9 +336,10 @@ services:
       session-control:
         condition: service_healthy
       savant-pipeline:
-        condition: service_started
+        condition: service_healthy
 
   savant-pipeline-lite:
+    <<: *local-env-file
     profiles: [gpu]
     build:
       context: ./services/savant-pipeline

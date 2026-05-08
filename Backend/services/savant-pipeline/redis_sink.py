@@ -33,70 +33,78 @@ class RedisStreamSink(NvDsPyFuncPlugin):
 
     def __init__(self, redis_url: str = "redis://redis:6379/0"):
         super().__init__()
-        self._redis = redis.from_url(redis_url, decode_responses=True)
+        self._redis = redis.from_url(
+            redis_url,
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+            health_check_interval=30,
+            retry_on_timeout=True,
+        )
         self._session_id = os.environ.get("SESSION_ID", str(uuid.uuid4()))
         self._fallback_camera_id = None
         self._active_tracks: dict[str, set[int]] = {}  # camera_id -> set of active track_ids
         self._context_refresh_deadline = 0.0
+        self._frame_counter: dict[str, int] = {}
         logger.info(f"Redis sink initialized, session={self._session_id}")
 
     def process_frame(self, buffer, frame_meta):
         """Called by Savant for each processed frame."""
         source_id = getattr(frame_meta, 'source_id', 'unknown')
         frame_number = int(getattr(frame_meta, 'frame_num', 0))
-        self._refresh_context()
-        now = datetime.now(timezone.utc).isoformat()
+        self._frame_counter[source_id] = self._frame_counter.get(source_id, 0) + 1
+        try:
+            self._refresh_context()
+            now = datetime.now(timezone.utc).isoformat()
+            current_tracks = set()
+            object_count = 0
 
-        current_tracks = set()
+            for obj_meta in self._get_objects(frame_meta):
+                object_count += 1
+                if getattr(obj_meta, "is_primary", False):
+                    continue
+                raw_track_id = getattr(obj_meta, "track_id", -1)
+                track_id = normalize_track_id(raw_track_id)
+                if track_id is None:
+                    if raw_track_id not in (-1, None):
+                        logger.warning(
+                            "Dropping invalid track id from Savant object metadata: source=%s frame=%s raw_track_id=%s",
+                            source_id,
+                            frame_number,
+                            raw_track_id,
+                        )
+                    continue
 
-        for obj_meta in self._get_objects(frame_meta):
-            if getattr(obj_meta, "is_primary", False):
-                continue
-            raw_track_id = getattr(obj_meta, "track_id", -1)
-            track_id = normalize_track_id(raw_track_id)
-            if track_id is None:
-                if raw_track_id not in (-1, None):
-                    logger.warning(
-                        "Dropping invalid track id from Savant object metadata: source=%s frame=%s raw_track_id=%s",
-                        source_id,
-                        frame_number,
-                        raw_track_id,
-                    )
-                continue
+                current_tracks.add(track_id)
+                bbox = self._get_bbox(obj_meta)
+                if is_full_frame_detection(bbox, frame_meta):
+                    continue
+                confidence = getattr(obj_meta, 'confidence', 0.0)
 
-            current_tracks.add(track_id)
-            bbox = self._get_bbox(obj_meta)
-            if is_full_frame_detection(bbox, frame_meta):
-                continue
-            confidence = getattr(obj_meta, 'confidence', 0.0)
+                prev_tracks = self._active_tracks.get(source_id, set())
+                event_type = "track_started" if track_id not in prev_tracks else "track_observed"
+                event_camera_id = self._event_camera_id(source_id)
+                event_session_id = self._session_id
+                artifacts = pop_track_artifacts(
+                    source_id=str(source_id),
+                    frame_num=frame_number,
+                    track_id=int(track_id),
+                )
 
-            # Determine if track just started
-            prev_tracks = self._active_tracks.get(source_id, set())
-            event_type = "track_started" if track_id not in prev_tracks else "track_observed"
-            event_camera_id = self._event_camera_id(source_id)
-            event_session_id = self._session_id
-            artifacts = pop_track_artifacts(
-                source_id=str(source_id),
-                frame_num=frame_number,
-                track_id=int(track_id),
-            )
+                self._publish(self.STREAM_TRACKS, {
+                    "event_type": event_type,
+                    "session_id": event_session_id,
+                    "camera_id": event_camera_id,
+                    "track_id": str(track_id),
+                    "bbox": json.dumps(bbox) if bbox else "[]",
+                    "confidence": str(confidence),
+                    "timestamp": now,
+                    "frame_number": str(frame_number),
+                })
 
-            # Publish track event
-            self._publish(self.STREAM_TRACKS, {
-                "event_type": event_type,
-                "session_id": event_session_id,
-                "camera_id": event_camera_id,
-                "track_id": str(track_id),
-                "bbox": json.dumps(bbox) if bbox else "[]",
-                "confidence": str(confidence),
-                "timestamp": now,
-                "frame_number": str(frame_number),
-            })
-
-            # Publish crops if attached by CropExtractor pyfunc
-            obj_crops = getattr(obj_meta, "_airco_crops", None) or []
-            cached_crops = artifacts.get("crops", [])
-            for crop in [*obj_crops, *cached_crops]:
+                obj_crops = getattr(obj_meta, "_airco_crops", None) or []
+                cached_crops = artifacts.get("crops", [])
+                for crop in [*obj_crops, *cached_crops]:
                     self._publish(self.STREAM_CROPS, {
                         "event_type": crop["type"],
                         "session_id": event_session_id,
@@ -108,50 +116,61 @@ class RedisStreamSink(NvDsPyFuncPlugin):
                         "timestamp": now,
                     })
 
-            # Publish snapshot if attached
-            snap = getattr(obj_meta, "_airco_snapshot", None) or artifacts.get("snapshot")
-            if snap:
-                self._publish(self.STREAM_SNAPSHOTS, {
-                    "event_type": "snapshot_requested",
-                    "session_id": event_session_id,
-                    "camera_id": event_camera_id,
-                    "track_id": str(track_id),
-                    "trigger": "periodic",
-                    "full_frame_b64": snap["full_b64"],
-                    "bbox": json.dumps(snap["bbox"]),
-                    "label": "",
-                    "quality": str(snap.get("quality", 0)),
+                snap = getattr(obj_meta, "_airco_snapshot", None) or artifacts.get("snapshot")
+                if snap:
+                    self._publish(self.STREAM_SNAPSHOTS, {
+                        "event_type": "snapshot_requested",
+                        "session_id": event_session_id,
+                        "camera_id": event_camera_id,
+                        "track_id": str(track_id),
+                        "trigger": "periodic",
+                        "full_frame_b64": snap["full_b64"],
+                        "bbox": json.dumps(snap["bbox"]),
+                        "label": "",
+                        "quality": str(snap.get("quality", 0)),
+                        "timestamp": now,
+                    })
+
+                if hasattr(obj_meta, '_phone_confidence'):
+                    self._publish(self.STREAM_PHONES, {
+                        "event_type": "phone_detected",
+                        "session_id": event_session_id,
+                        "camera_id": event_camera_id,
+                        "track_id": str(track_id),
+                        "confidence": str(obj_meta._phone_confidence),
+                        "duration_seconds": "0",
+                        "timestamp": now,
+                    })
+
+            prev_tracks = self._active_tracks.get(source_id, set())
+            ended_tracks = prev_tracks - current_tracks
+            for ended_id in ended_tracks:
+                self._publish(self.STREAM_TRACKS, {
+                    "event_type": "track_ended",
+                    "session_id": self._session_id,
+                    "camera_id": self._event_camera_id(source_id),
+                    "track_id": str(ended_id),
+                    "bbox": "[]",
+                    "confidence": "0",
                     "timestamp": now,
+                    "frame_number": str(frame_number),
                 })
 
-            # Check for phone detections (secondary classifier output)
-            if hasattr(obj_meta, '_phone_confidence'):
-                self._publish(self.STREAM_PHONES, {
-                    "event_type": "phone_detected",
-                    "session_id": event_session_id,
-                    "camera_id": event_camera_id,
-                    "track_id": str(track_id),
-                    "confidence": str(obj_meta._phone_confidence),
-                    "duration_seconds": "0",
-                    "timestamp": now,
-                })
-
-        # Detect track_ended events
-        prev_tracks = self._active_tracks.get(source_id, set())
-        ended_tracks = prev_tracks - current_tracks
-        for ended_id in ended_tracks:
-            self._publish(self.STREAM_TRACKS, {
-                "event_type": "track_ended",
-                "session_id": self._session_id,
-                "camera_id": self._event_camera_id(source_id),
-                "track_id": str(ended_id),
-                "bbox": "[]",
-                "confidence": "0",
-                "timestamp": now,
-                "frame_number": str(frame_number),
-            })
-
-        self._active_tracks[source_id] = current_tracks
+            self._active_tracks[source_id] = current_tracks
+            if self._frame_counter[source_id] <= 3 or self._frame_counter[source_id] % 30 == 0:
+                logger.info(
+                    "[RedisStreamSink] source=%s frame=%s objects=%s active_tracks=%s",
+                    source_id,
+                    frame_number,
+                    object_count,
+                    len(current_tracks),
+                )
+        except Exception:
+            logger.exception(
+                "[RedisStreamSink] source=%s frame=%s failed; continuing pipeline",
+                source_id,
+                frame_number,
+            )
 
     def _refresh_context(self):
         now = time.monotonic()

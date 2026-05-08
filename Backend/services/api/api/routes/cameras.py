@@ -22,6 +22,8 @@ from api.auth import AuthState, require_authenticated, require_admin
 logger = logging.getLogger(__name__)
 
 GO2RTC_URL = os.getenv("GO2RTC_URL", "http://go2rtc:1984")
+GO2RTC_FORCE_H264 = os.getenv("GO2RTC_FORCE_H264", "false").strip().lower() in {"1", "true", "yes", "on"}
+GO2RTC_H264_SUFFIX = os.getenv("GO2RTC_H264_SUFFIX", "#video=h264")
 
 router = APIRouter()
 
@@ -45,9 +47,16 @@ def _resolve_rtsp_url(rtsp_url: str) -> str:
     return rtsp_url
 
 
+def _go2rtc_source(rtsp_url: str) -> str:
+    resolved = _resolve_rtsp_url(rtsp_url)
+    if not GO2RTC_FORCE_H264 or resolved.startswith("ffmpeg:"):
+        return resolved
+    return f"ffmpeg:{resolved}{GO2RTC_H264_SUFFIX}"
+
+
 async def _go2rtc_add(name: str, rtsp_url: str) -> None:
     """Register a camera stream in go2rtc. Logs and continues on failure."""
-    resolved_url = _resolve_rtsp_url(rtsp_url)
+    resolved_url = _go2rtc_source(rtsp_url)
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.put(

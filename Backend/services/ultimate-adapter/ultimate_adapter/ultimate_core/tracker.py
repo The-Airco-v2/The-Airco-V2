@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections import OrderedDict, defaultdict, deque
+import inspect
+import os
 from pathlib import Path
 from typing import Any, List, Mapping, Optional, Tuple
 
@@ -193,13 +195,18 @@ class UltimateStableTrackerV2:
         )
 
         self.detector = detector if detector is not None else load_detector_model(self.cfg["det_model"], self.device)
+        self._tracker_uses_external_reid = False
+        if feature_extractor is not None:
+            self.feature_extractor = feature_extractor
+        else:
+            base_extractor = RobustFeatureExtractor(self.cfg["reid_model"], self.device, self.cfg["fp16"], self.cfg)
+            self.feature_extractor = MultiScalePyramidExtractor(base_extractor, self.cfg)
         if tracker_backend is not None:
             self.tracker = tracker_backend
         else:
             from boxmot.trackers import StrongSort
 
-            self.tracker = StrongSort(
-                reid_weights=Path(self.cfg["reid_model"]),
+            strongsort_kwargs = dict(
                 device=self.device,
                 half=self.cfg["fp16"],
                 min_conf=self.cfg["det_conf"],
@@ -211,12 +218,27 @@ class UltimateStableTrackerV2:
                 ema_alpha=self.cfg["ema_alpha"],
                 max_age=self.cfg["max_age"],
             )
-
-        if feature_extractor is not None:
-            self.feature_extractor = feature_extractor
-        else:
-            base_extractor = RobustFeatureExtractor(self.cfg["reid_model"], self.device, self.cfg["fp16"], self.cfg)
-            self.feature_extractor = MultiScalePyramidExtractor(base_extractor, self.cfg)
+            tracker_reid_model = getattr(self.feature_extractor, "tracker_reid_model", None)
+            if tracker_reid_model is None:
+                tracker_reid_model = getattr(getattr(self.feature_extractor, "base", None), "tracker_reid_model", None)
+            signature = inspect.signature(StrongSort.__init__)
+            if tracker_reid_model is not None and "reid_model" in signature.parameters:
+                self.tracker = StrongSort(reid_model=tracker_reid_model, **strongsort_kwargs)
+                self._tracker_uses_external_reid = True
+            else:
+                bootstrap_weights = self.cfg["reid_model"]
+                if not str(bootstrap_weights).lower().endswith((".pt", ".onnx", ".engine", ".torchscript", ".tflite")):
+                    bootstrap_weights = os.getenv("ULTIMATE_BOOTSTRAP_REID_WEIGHTS", "osnet_x0_25_msmt17.pt")
+                self.tracker = StrongSort(reid_weights=Path(bootstrap_weights), **strongsort_kwargs)
+                if tracker_reid_model is not None:
+                    # Older BoxMOT builds still require a bootstrap weights path during
+                    # initialization, but we replace the appearance backend immediately
+                    # after construction and pass embeddings explicitly during updates.
+                    try:
+                        self.tracker.model = tracker_reid_model
+                    except Exception:
+                        pass
+                    self._tracker_uses_external_reid = True
 
         self.registry = registry
         self.birth_system = BirthCertificateSystem(self.cfg)
@@ -274,7 +296,27 @@ class UltimateStableTrackerV2:
             return self._last_results
         self._last_detections = detections
         self.last_detection_frame = self.frame_idx
-        tracks = self.tracker.update(detections, frame)
+        tracker_embs = None
+        if self._tracker_uses_external_reid and detections is not None and len(detections) > 0:
+            boxes = [
+                (int(det[0]), int(det[1]), int(det[2]), int(det[3]))
+                for det in np.asarray(detections)
+            ]
+            confs = [float(det[4]) for det in np.asarray(detections)]
+            feats = self.feature_extractor.extract_batch(frame, boxes, confs)
+            if feats:
+                embeddings = []
+                for deep_feat, color_feat in feats:
+                    emb = deep_feat if deep_feat is not None else color_feat
+                    if emb is None:
+                        break
+                    embeddings.append(np.asarray(emb, dtype=np.float32))
+                if len(embeddings) == len(feats):
+                    tracker_embs = np.stack(embeddings, axis=0).astype(np.float32)
+        if tracker_embs is not None:
+            tracks = self.tracker.update(detections, frame, embs=tracker_embs)
+        else:
+            tracks = self.tracker.update(detections, frame)
         results = []
         observations = []
         current_tracks = set()
@@ -392,4 +434,3 @@ class UltimateStableTrackerV2:
     def track_frame(self, frame: np.ndarray) -> List[Tuple]:
         detections = self.detect(frame)
         return self.process_detections(frame, detections)
-

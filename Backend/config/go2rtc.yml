@@ -6,13 +6,13 @@ streams:
   cam5: "rtsp://admin:Vijay%405458@106.201.242.96:8554/Streaming/Channels/501"
   cam6: "rtsp://admin:Vijay%405458@106.201.242.96:8554/Streaming/Channels/601"
   active_session:
-    - rtsp://admin:Vijay%405458@106.201.242.31:8554/Streaming/Channels/101
+    - ffmpeg:rtsp://admin:Vijay%405458@106.201.242.31:8554/Streaming/Channels/301#video=h264
   cabin:
     - rtsp://admin:Vijay%405458@airco-office.ddns.net:8554/Streaming/Channels/101
   session_0fff68fe_0258_4b92_94b8_7e37fae801ba_52b16c02_89d6_41b1_b9a2_52bfc8d89e80:
     - rtsp://admin:Vijay%405458@171.50.246.196:8554/Streaming/Channels/401
   session_49941922_0c02_4e22_b231_4bbc0be6b9c3_52b16c02_89d6_41b1_b9a2_52bfc8d89e80:
-    - rtsp://admin:Vijay%405458@106.201.242.31:8554/Streaming/Channels/101
+    - ffmpeg:rtsp://admin:Vijay%405458@106.201.242.31:8554/Streaming/Channels/101#video=h264
   cabin_:
     - rtsp://admin:Vijay%405458@106.201.242.31:8554/Streaming/Channels/101
   mid_floor:
@@ -25,6 +25,8 @@ streams:
     - rtsp://admin:Vijay%405458@106.201.242.31:8554/Streaming/Channels/501
   entrance_2:
     - rtsp://admin:Vijay%405458@106.201.242.31:8554/Streaming/Channels/601
+  session_d2cdf1be_357e_49f7_9f81_65da4f3188e6_28296bce_eff7_4c8e_8194_f2000b254017:
+    - ffmpeg:rtsp://admin:Vijay%405458@106.201.242.31:8554/Streaming/Channels/401#video=h264
 
 rtsp:
   listen: ":8556"

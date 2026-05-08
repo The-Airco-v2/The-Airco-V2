@@ -10,7 +10,7 @@ DEFAULT_ULTIMATE_CORE_CONFIG: dict[str, Any] = {
     "det_iou": 0.35,
     "det_classes": [0],
     "det_imgsz": 640,
-    "reid_model": "osnet_x0_25_msmt17.pt",
+    "reid_model": "osnet",
     "ema_alpha": 0.35,
     "min_hits": 1,
     "max_age": 60,
