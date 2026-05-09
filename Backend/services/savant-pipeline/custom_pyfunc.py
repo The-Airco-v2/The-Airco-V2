@@ -30,6 +30,8 @@ from event_utils import is_full_frame_detection, normalize_track_id
 from frame_artifacts import store_track_artifacts
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.info("custom_pyfunc module imported")
 
 
 class CropExtractor(NvDsPyFuncPlugin):
@@ -38,11 +40,16 @@ class CropExtractor(NvDsPyFuncPlugin):
     Attached to frame metadata for downstream Redis sink to publish.
     """
 
-    def __init__(self, face_min_size: int = 20, body_min_size: int = 80,
-                 snapshot_interval_frames: int = 30,
-                 triton_url: str = "triton:8001",
-                 use_scrfd: bool = True):
+    def __init__(
+        self,
+        face_min_size: int = 20,
+        body_min_size: int = 80,
+        snapshot_interval_frames: int = 30,
+        triton_url: str = "triton:8001",
+        use_scrfd: bool = True):
         super().__init__()
+        logger.warning("[CropExtractor] instantiated – face_min_size=%s, use_scrfd=%s", face_min_size, use_scrfd)
+        print("[CropExtractor] __init__ called")
         self.face_min_size = face_min_size
         self.body_min_size = body_min_size
         self.snapshot_interval = snapshot_interval_frames
@@ -61,6 +68,8 @@ class CropExtractor(NvDsPyFuncPlugin):
         source_id = frame_meta.source_id if hasattr(frame_meta, 'source_id') else "unknown"
         self._frame_counter[source_id] = self._frame_counter.get(source_id, 0) + 1
         frame_num = self._frame_counter[source_id]
+        logger.warning("[CropExtractor] processing frame %s source=%s", frame_num, source_id)
+        print(f"[CropExtractor] processing frame {frame_num} source={source_id}")
         started = time.perf_counter()
 
         try:
@@ -102,26 +111,15 @@ class CropExtractor(NvDsPyFuncPlugin):
                     if h < self.body_min_size or w < self.body_min_size // 2:
                         continue
 
-                    # Body crop (full person bbox)
-                    body_crop = frame_np[int(y1):int(y2), int(x1):int(x2)]
+                    # Prepare containers for crops and snapshot
                     track_crops: list[dict] = []
                     track_snapshot: dict | None = None
 
-                    if body_crop.size > 0:
-                        body_quality = self._compute_quality(body_crop)
-                        body_b64 = self._encode_crop(body_crop, target_size=(128, 256))
-                        crop_payload = {
-                            "type": "body_crop",
-                            "b64": body_b64,
-                            "bbox": bbox,
-                            "quality": body_quality,
-                        }
-                        track_crops.append(crop_payload)
-                        self._attach_crop(obj_meta, crop_payload)
-
+                    # Extract the person region (used for face detection)
+                    person_crop = frame_np[int(y1):int(y2), int(x1):int(x2)]
                     # Face detection — use SCRFD if available, fall back to heuristic
                     if self.use_scrfd:
-                        face_results = self._detect_face_scrfd(body_crop)
+                        face_results = self._detect_face_scrfd(person_crop)
                         if face_results is not None:
                             face_crop_aligned, face_bbox_local, face_quality, face_conf, kpts = face_results
                             face_bbox = [
@@ -141,9 +139,9 @@ class CropExtractor(NvDsPyFuncPlugin):
                             track_crops.append(crop_payload)
                             self._attach_crop(obj_meta, crop_payload)
                     else:
-                        # Fallback: upper 40% heuristic
+                        # Fallback: upper 40% heuristic on the person crop
                         face_y2 = y1 + h * 0.4
-                        face_crop = frame_np[int(y1):int(face_y2), int(x1):int(x2)]
+                        face_crop = person_crop[int(0):int(face_y2 - y1), int(0):int(x2 - x1)]
                         if face_crop.size > 0 and face_crop.shape[0] >= self.face_min_size:
                             face_quality = self._compute_quality(face_crop)
                             face_b64 = self._encode_crop(face_crop, target_size=(112, 112))
@@ -157,16 +155,21 @@ class CropExtractor(NvDsPyFuncPlugin):
                             track_crops.append(crop_payload)
                             self._attach_crop(obj_meta, crop_payload)
 
-                    # Snapshot selection (periodic best-frame)
+                    # Snapshot selection (periodic best face only)
                     if frame_num % self.snapshot_interval == 0:
-                        quality = self._compute_quality(body_crop if body_crop.size > 0 else frame_np)
-                        track_key = f"{source_id}:{track_id}"
-                        if quality > self._best_scores.get(track_key, 0):
+                        face_payload = next((c for c in track_crops if c.get("type") == "face_crop"), None)
+                        if face_payload:
+                            quality = face_payload["quality"]
+                            track_key = f"{source_id}:{track_id}"
+                        else:
+                            track_key = ""
+                        if face_payload and quality > self._best_scores.get(track_key, 0):
                             self._best_scores[track_key] = quality
-                            full_b64 = self._encode_crop(frame_np)
                             track_snapshot = {
-                                "full_b64": full_b64,
-                                "bbox": bbox,
+                                "full_b64": face_payload["b64"],
+                                "bbox": [0, 0, 112, 112],
+                                "face_bbox": face_payload["bbox"],
+                                "kind": "face",
                                 "quality": quality,
                             }
                             self._attach_snapshot(obj_meta, track_snapshot)
@@ -327,7 +330,9 @@ class CropExtractor(NvDsPyFuncPlugin):
 
         det_size = 640
         resized = cv2.resize(person_crop, (det_size, det_size))
-        inp_np = resized.astype(np.float32).transpose(2, 0, 1)[np.newaxis]
+        # SCRFD expects BGR images normalized to (img - 127.5) / 128.0
+        normalized = (resized.astype(np.float32) - 127.5) / 128.0
+        inp_np = normalized.transpose(2, 0, 1)[np.newaxis]
 
         try:
             input_name = self._scrfd_session.get_inputs()[0].name
@@ -336,7 +341,8 @@ class CropExtractor(NvDsPyFuncPlugin):
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             if elapsed_ms > 500:
                 logger.warning("SCRFD inference slow: %.1f ms", elapsed_ms)
-            scores, bboxes, keypoints = self._decode_scrfd_outputs(outputs, det_size=det_size, score_thresh=0.5)
+            # Lower the confidence threshold for debugging; SCRFD default is 0.5 but we want to see any detections
+            scores, bboxes, keypoints = self._decode_scrfd_outputs(outputs, det_size=det_size, score_thresh=0.2)
             self._scrfd_failures = 0
         except Exception as e:
             self._scrfd_failures += 1

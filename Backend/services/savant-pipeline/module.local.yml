@@ -58,7 +58,7 @@ pipeline:
         ll-config-file: /opt/savant/module/config/tracker.yml
 
     - element: pyfunc
-      module: custom_pyfunc
+      module: airco_custom_pyfunc
       class_name: CropExtractor
       kwargs:
         face_min_size: 40

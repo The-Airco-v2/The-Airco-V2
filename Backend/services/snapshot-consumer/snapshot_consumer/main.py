@@ -134,6 +134,9 @@ async def main():
         label = fields.get("label", "")
         bbox_raw = fields.get("bbox", "[0, 0, 0, 0]")
         bbox = json.loads(bbox_raw) if isinstance(bbox_raw, str) else bbox_raw
+        face_bbox_raw = fields.get("face_bbox", "[]")
+        face_bbox = json.loads(face_bbox_raw) if isinstance(face_bbox_raw, str) else face_bbox_raw
+        snapshot_kind = fields.get("snapshot_kind", "full_frame")
         full_frame_b64 = fields.get("full_frame_b64", "")
 
         if not full_frame_b64:
@@ -145,11 +148,18 @@ async def main():
         if frame is None:
             return
 
+        if snapshot_kind == "face":
+            stored_bbox = face_bbox if face_bbox else bbox
+            bbox = [0, 0, frame.shape[1], frame.shape[0]]
+            label = label or "face"
+        else:
+            stored_bbox = bbox
         annotated = render_evidence(frame, bbox, label=label)
         jpeg_bytes = encode_jpeg(annotated)
 
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        object_name = f"snapshots/{session_id or 'unknown'}/{camera_id or 'unknown'}/{ts}_{track_id or '0'}_full.jpg"
+        suffix = "face" if snapshot_kind == "face" else "full"
+        object_name = f"snapshots/{session_id or 'unknown'}/{camera_id or 'unknown'}/{ts}_{track_id or '0'}_{suffix}.jpg"
         upload_bytes(object_name, jpeg_bytes)
 
         async with async_session() as db:
@@ -168,8 +178,9 @@ async def main():
                 session_person_id=session_person_id,
                 camera_id=camera_id,
                 event_type=fields.get("trigger", "alert"),
-                full_frame_url=object_name,
-                bbox=bbox,
+                full_frame_url=None if snapshot_kind == "face" else object_name,
+                face_crop_url=object_name if snapshot_kind == "face" else None,
+                bbox=stored_bbox,
                 score=score,
             )
             db.add(snap)

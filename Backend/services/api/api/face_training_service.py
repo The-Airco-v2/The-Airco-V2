@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import httpx
 import logging
 import os
 import pickle
 import re
+import socket
 import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 import cv2
 import numpy as np
@@ -48,21 +51,27 @@ ANGLE_LABELS = ("frontal", "left", "right", "up", "down")
 
 DEFAULT_TARGET_FRAMES   = 100
 DEFAULT_DURATION_SECONDS = 120
-FACE_MIN_SIZE_PX        = 32
-BLUR_THRESHOLD          = 25.0
-LIGHT_LOW_THRESHOLD     = 20.0
-LIGHT_HIGH_THRESHOLD    = 245.0
+FACE_MIN_SIZE_PX        = int(os.getenv("FACE_TRAINING_MIN_FACE_SIZE_PX", "20"))
+BLUR_THRESHOLD          = float(os.getenv("FACE_TRAINING_BLUR_THRESHOLD", "10.0"))
+LIGHT_LOW_THRESHOLD     = float(os.getenv("FACE_TRAINING_LIGHT_LOW_THRESHOLD", "15.0"))
+LIGHT_HIGH_THRESHOLD    = float(os.getenv("FACE_TRAINING_LIGHT_HIGH_THRESHOLD", "250.0"))
 DUPLICATE_SIM_THRESHOLD = 0.80
 MAX_PER_ANGLE           = 25
-FACE_CROP_MARGIN        = 0.06
+FACE_CROP_MARGIN        = 0.15
 
 SCRFD_INPUT_SIZE = 640
-SCRFD_SCORE_THRESHOLD = 0.45
+SCRFD_SCORE_THRESHOLD = float(os.getenv("FACE_TRAINING_SCRFD_SCORE_THRESHOLD", "0.25"))
 SCRFD_NMS_THRESHOLD = 0.4
 SCRFD_EXPECTED_OUTPUTS = 9
 SCRFD_MAX_FACE_AREA_RATIO = 0.6
 SCRFD_MIN_ASPECT_RATIO = 0.3
 SCRFD_MAX_ASPECT_RATIO = 3.0
+SCRFD_TILE_FALLBACK = os.getenv("FACE_TRAINING_SCRFD_TILE_FALLBACK", "true").strip().lower() in {"1", "true", "yes", "on"}
+SCRFD_TILE_OVERLAP = float(os.getenv("FACE_TRAINING_SCRFD_TILE_OVERLAP", "0.20"))
+FACE_TRAINING_REJECT_MULTIPLE_FACES = os.getenv(
+    "FACE_TRAINING_REJECT_MULTIPLE_FACES",
+    "false",
+).strip().lower() in {"1", "true", "yes", "on"}
 EMBEDDING_WORKERS = 3
 TRAINING_QUEUE_SIZE = 12
 PROGRESS_COMMIT_FRAME_INTERVAL = 10
@@ -133,8 +142,45 @@ class FaceTrainingCancelResponse(BaseModel):
 def _stream_name(camera_name: str) -> str:
     return "".join(c.lower() if c.isalnum() else "_" for c in camera_name).strip("_")
 
+GO2RTC_URL = os.getenv("GO2RTC_URL", "http://go2rtc:1984")
+GO2RTC_FORCE_H264 = os.getenv("GO2RTC_FORCE_H264", "false").strip().lower() in {"1", "true", "yes", "on"}
+GO2RTC_H264_SUFFIX = os.getenv("GO2RTC_H264_SUFFIX", "#video=h264")
+
+
+def _resolve_rtsp_url(rtsp_url: str) -> str:
+    try:
+        parsed = urlparse(rtsp_url)
+        hostname = parsed.hostname
+        if hostname and not hostname.replace(".", "").isdigit():
+            ip = socket.gethostbyname(hostname)
+            netloc = parsed.netloc.replace(hostname, ip, 1)
+            return urlunparse(parsed._replace(netloc=netloc))
+    except Exception:
+        logger.exception("[face-training] Failed to resolve RTSP hostname")
+    return rtsp_url
+
+
+def _go2rtc_source(rtsp_url: str) -> str:
+    resolved = _resolve_rtsp_url(rtsp_url)
+    if not GO2RTC_FORCE_H264 or resolved.startswith("ffmpeg:"):
+        return resolved
+    return f"ffmpeg:{resolved}{GO2RTC_H264_SUFFIX}"
+
+
 def _rtsp_url(camera_name: str) -> str:
     return f"rtsp://go2rtc:8556/{_stream_name(camera_name)}"
+
+
+async def _ensure_go2rtc_stream(camera_name: str, rtsp_url: str) -> str:
+    stream_name = _stream_name(camera_name)
+    source = _go2rtc_source(rtsp_url)
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        response = await client.put(
+            f"{GO2RTC_URL}/api/streams",
+            params={"name": stream_name, "src": source},
+        )
+        response.raise_for_status()
+    return _rtsp_url(camera_name)
 
 async def _open_capture(url: str) -> cv2.VideoCapture | None:
     os.environ.setdefault(
@@ -206,18 +252,57 @@ async def _infer_scrfd_triton(image: np.ndarray) -> list[np.ndarray]:
     return [tensor for tensor in tensors if tensor is not None]
 
 
+def _scrfd_output_array(output: np.ndarray) -> np.ndarray:
+    arr = np.asarray(output)
+    if arr.ndim >= 2 and arr.shape[0] == 1:
+        arr = arr[0]
+    return arr
+
+
+def _scrfd_output_maps(outputs: list[np.ndarray]) -> tuple[dict[int, np.ndarray], dict[int, np.ndarray], dict[int, np.ndarray]]:
+    scores_by_count: dict[int, np.ndarray] = {}
+    bboxes_by_count: dict[int, np.ndarray] = {}
+    kps_by_count: dict[int, np.ndarray] = {}
+
+    for output in outputs:
+        arr = _scrfd_output_array(output)
+        if arr.ndim == 1:
+            scores_by_count[arr.shape[0]] = arr.reshape(-1)
+            continue
+        if arr.ndim != 2:
+            arr = arr.reshape(arr.shape[0], -1)
+        width = arr.shape[1]
+        count = arr.shape[0]
+        if width == 1:
+            scores_by_count[count] = arr.reshape(-1)
+        elif width == 4:
+            bboxes_by_count[count] = arr
+        elif width == 10:
+            kps_by_count[count] = arr
+
+    return scores_by_count, bboxes_by_count, kps_by_count
+
+
 def _decode_scrfd(outputs: list[np.ndarray], det_size: int = SCRFD_INPUT_SIZE) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     strides, fmc, num_anchors = [8, 16, 32], 3, 2
+    scores_by_count, bboxes_by_count, kps_by_count = _scrfd_output_maps(outputs)
     scores_l, bboxes_l, kps_l = [], [], []
     for i, stride in enumerate(strides):
-        cls = outputs[i].flatten()
+        fh = fw = det_size // stride
+        expected_count = fh * fw * num_anchors
+        cls = scores_by_count.get(expected_count)
+        bbox_raw = bboxes_by_count.get(expected_count)
+        kps_raw = kps_by_count.get(expected_count)
+        if cls is None or bbox_raw is None or kps_raw is None:
+            cls = _scrfd_output_array(outputs[i]).flatten()
+            bbox_raw = _scrfd_output_array(outputs[fmc + i])
+            kps_raw = _scrfd_output_array(outputs[2 * fmc + i])
         mask = cls > SCRFD_SCORE_THRESHOLD
         if not mask.any():
             continue
-        fh = fw = det_size // stride
         ax, ay = np.mgrid[:fh, :fw]
         anchors = np.repeat(np.stack([ay.ravel(), ax.ravel()], axis=1), num_anchors, axis=0).astype(np.float32)
-        sa, sb, sk = anchors[mask], outputs[fmc + i][mask], outputs[2 * fmc + i][mask]
+        sa, sb, sk = anchors[mask], bbox_raw[mask], kps_raw[mask]
         cx, cy = (sa[:, 0] + 0.5) * stride, (sa[:, 1] + 0.5) * stride
         bbox = np.stack([cx - sb[:, 0]*stride, cy - sb[:, 1]*stride,
                          cx + sb[:, 2]*stride, cy + sb[:, 3]*stride], axis=1)
@@ -245,6 +330,14 @@ def _nms(boxes: np.ndarray, scores: np.ndarray, thresh: float = SCRFD_NMS_THRESH
     return keep
 
 
+def _dedupe_detections(detections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not detections:
+        return []
+    boxes = np.asarray([d["bbox"] for d in detections], dtype=np.float32)
+    scores = np.asarray([d.get("score", 0.0) for d in detections], dtype=np.float32)
+    return [detections[index] for index in _nms(boxes, scores)]
+
+
 def _is_face_like_bbox(bbox: list[float], frame_shape: tuple) -> bool:
     x1, y1, x2, y2 = (float(v) for v in bbox)
     bw, bh = x2 - x1, y2 - y1
@@ -261,9 +354,17 @@ def _is_face_like_bbox(bbox: list[float], frame_shape: tuple) -> bool:
     return True
 
 
-async def _detect_scrfd(frame: np.ndarray) -> list[dict[str, Any]]:
+async def _detect_scrfd_in_frame(
+    frame: np.ndarray,
+    *,
+    origin: tuple[int, int] = (0, 0),
+    full_shape: tuple | None = None,
+) -> list[dict[str, Any]]:
     h, w = frame.shape[:2]
-    inp = cv2.resize(frame, (SCRFD_INPUT_SIZE, SCRFD_INPUT_SIZE)).astype(np.float32).transpose(2,0,1)[np.newaxis]
+    resized = cv2.resize(frame, (SCRFD_INPUT_SIZE, SCRFD_INPUT_SIZE))
+    resized = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+    normalized = (resized.astype(np.float32) - 127.5) / 128.0
+    inp = normalized.transpose(2,0,1)[np.newaxis]
     try:
         outputs = await _infer_scrfd_triton(inp)
         scores, bboxes, kps = _decode_scrfd(outputs)
@@ -273,19 +374,49 @@ async def _detect_scrfd(frame: np.ndarray) -> list[dict[str, Any]]:
         logger.warning("SCRFD inference failed: %s", exc); return []
     if not len(scores):
         return []
+    ox, oy = origin
+    shape_for_filter = full_shape or frame.shape
     sx, sy = w / SCRFD_INPUT_SIZE, h / SCRFD_INPUT_SIZE
     out = []
     for idx in _nms(bboxes, scores):
         b = bboxes[idx]
-        bbox = [max(0., b[0]*sx), max(0., b[1]*sy), min(float(w), b[2]*sx), min(float(h), b[3]*sy)]
-        # Temporarily disabled face-like bbox filter for debugging
-        # if not _is_face_like_bbox(bbox, frame.shape):
-        #     continue
-        if (bbox[2]-bbox[0]) < FACE_MIN_SIZE_PX or (bbox[3]-bbox[1]) < FACE_MIN_SIZE_PX:
+        bbox = [
+            max(0., b[0]*sx) + ox,
+            max(0., b[1]*sy) + oy,
+            min(float(w), b[2]*sx) + ox,
+            min(float(h), b[3]*sy) + oy,
+        ]
+        if not _is_face_like_bbox(bbox, shape_for_filter):
             continue
         k = kps[idx].reshape(5, 2); k[:,0] *= sx; k[:,1] *= sy
+        k[:, 0] += ox
+        k[:, 1] += oy
         out.append({"bbox": bbox, "score": float(scores[idx]), "keypoints": k})
     return sorted(out, key=lambda d: d["score"], reverse=True)
+
+
+def _scrfd_tiles(frame: np.ndarray) -> list[tuple[np.ndarray, tuple[int, int]]]:
+    h, w = frame.shape[:2]
+    tile_w = max(1, int(w * 0.55))
+    tile_h = max(1, int(h * 0.55))
+    step_x = max(1, int(tile_w * (1.0 - SCRFD_TILE_OVERLAP)))
+    step_y = max(1, int(tile_h * (1.0 - SCRFD_TILE_OVERLAP)))
+    xs = sorted(set([0, max(0, w - tile_w), *range(0, max(1, w - tile_w + 1), step_x)]))
+    ys = sorted(set([0, max(0, h - tile_h), *range(0, max(1, h - tile_h + 1), step_y)]))
+    return [(frame[y:y + tile_h, x:x + tile_w], (x, y)) for y in ys for x in xs]
+
+
+async def _detect_scrfd(frame: np.ndarray) -> list[dict[str, Any]]:
+    detections = await _detect_scrfd_in_frame(frame)
+    if detections or not SCRFD_TILE_FALLBACK:
+        return detections
+
+    tiled: list[dict[str, Any]] = []
+    for tile, origin in _scrfd_tiles(frame):
+        if tile.size == 0:
+            continue
+        tiled.extend(await _detect_scrfd_in_frame(tile, origin=origin, full_shape=frame.shape))
+    return _dedupe_detections(sorted(tiled, key=lambda d: d["score"], reverse=True))
 
 
 def _detect_haar(frame: np.ndarray) -> list[dict[str, Any]]:
@@ -296,15 +427,14 @@ def _detect_haar(frame: np.ndarray) -> list[dict[str, Any]]:
     out = []
     for x, y, w, h in cascade.detectMultiScale(gray, 1.05, 3, minSize=(24, 24)):
         bbox = [float(x), float(y), float(x + w), float(y + h)]
-        # Temporarily disabled face-like bbox filter for debugging
-        # if _is_face_like_bbox(bbox, frame.shape):
+        if not _is_face_like_bbox(bbox, frame.shape):
+            continue
         out.append({"bbox": [float(x), float(y), float(x+w), float(y+h)], "score": 0.5, "keypoints": None})
     return sorted(out, key=lambda d: (d["bbox"][2]-d["bbox"][0])*(d["bbox"][3]-d["bbox"][1]), reverse=True)
 
 
 async def _detect(frame: np.ndarray) -> list[dict[str, Any]]:
-    detections = await _detect_scrfd(frame)
-    return detections or _detect_haar(frame)
+    return await _detect_scrfd(frame)
 
 
 def _best_detection(detections: list[dict[str, Any]], frame_shape: tuple) -> dict[str, Any] | None:
@@ -314,7 +444,7 @@ def _best_detection(detections: list[dict[str, Any]], frame_shape: tuple) -> dic
     cx, cy = fw / 2.0, fh / 2.0
     return max(detections, key=lambda d: (
         d.get("score", 0.0),
-        -((d["bbox"][2]-d["bbox"][0]) * (d["bbox"][3]-d["bbox"][1])),
+        ((d["bbox"][2]-d["bbox"][0]) * (d["bbox"][3]-d["bbox"][1])),
         -abs((d["bbox"][0]+d["bbox"][2])/2 - cx) - abs((d["bbox"][1]+d["bbox"][3])/2 - cy),
     ))
 
@@ -759,7 +889,26 @@ async def _run_face_training_job(job_id: uuid.UUID) -> None:
                 "[face-training] Starting capture for employee %s on camera %s (ID: %s) using RTSP URL: %s",
                 employee.name, camera.name, str(camera.id), cam.rtsp_url
             )
-            capture = await _open_capture(cam.rtsp_url)
+            relay_url = _rtsp_url(camera.name)
+            capture_url = relay_url
+            try:
+                capture_url = await _ensure_go2rtc_stream(camera.name, cam.rtsp_url)
+                logger.info(
+                    "[face-training] Using go2rtc relay stream for employee %s on camera %s: %s",
+                    employee.name, camera.name, capture_url,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[face-training] Failed to refresh go2rtc relay for camera %s, trying existing relay %s before raw RTSP: %s",
+                    camera.name, relay_url, exc,
+                )
+            capture = await _open_capture(capture_url)
+            if capture is None and capture_url != cam.rtsp_url:
+                logger.warning(
+                    "[face-training] Relay stream unavailable for camera %s, falling back to raw RTSP",
+                    camera.name,
+                )
+                capture = await _open_capture(cam.rtsp_url)
             if capture is None:
                 raise HTTPException(409, "Unable to open camera stream for training")
 
@@ -989,17 +1138,38 @@ async def _run_face_training_job(job_id: uuid.UUID) -> None:
                                 )
                                 continue
 
-                            # Temporarily allow multiple faces for debugging
-                            # if face_count > 1:
-                            #     await _mark_rejection(
-                            #         image=face_input if face_input is not None else frame,
-                            #         frame_index=frame_index,
-                            #         reason="multiple_faces_detected",
-                            #         detector_face_count=face_count,
-                            #         detector_confidence=detector_confidence,
-                            #         detector_bbox=detector_bbox,
-                            #     )
-                            #     continue
+                            if FACE_TRAINING_REJECT_MULTIPLE_FACES and face_count > 1:
+                                await _mark_rejection(
+                                    image=face_input if face_input is not None else frame,
+                                    frame_index=frame_index,
+                                    reason="multiple_faces_detected",
+                                    detector_face_count=face_count,
+                                    detector_confidence=detector_confidence,
+                                    detector_bbox=detector_bbox,
+                                )
+                                continue
+
+                            if face_input is None or top_detection.get("keypoints") is None:
+                                await _mark_rejection(
+                                    image=frame,
+                                    frame_index=frame_index,
+                                    reason="face_alignment_required",
+                                    detector_face_count=face_count,
+                                    detector_confidence=detector_confidence,
+                                    detector_bbox=detector_bbox,
+                                )
+                                continue
+
+                            if aligned_face is None:
+                                await _mark_rejection(
+                                    image=face_crop,
+                                    frame_index=frame_index,
+                                    reason="face_alignment_failed",
+                                    detector_face_count=face_count,
+                                    detector_confidence=detector_confidence,
+                                    detector_bbox=detector_bbox,
+                                )
+                                continue
 
                             if _is_occluded_detection(top_detection, frame.shape):
                                 await _mark_rejection(

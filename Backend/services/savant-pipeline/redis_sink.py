@@ -126,6 +126,8 @@ class RedisStreamSink(NvDsPyFuncPlugin):
                         "trigger": "periodic",
                         "full_frame_b64": snap["full_b64"],
                         "bbox": json.dumps(snap["bbox"]),
+                        "face_bbox": json.dumps(snap.get("face_bbox", [])),
+                        "snapshot_kind": snap.get("kind", "full_frame"),
                         "label": "",
                         "quality": str(snap.get("quality", 0)),
                         "timestamp": now,
