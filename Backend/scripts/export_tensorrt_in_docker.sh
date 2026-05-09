@@ -5,7 +5,9 @@ set -euo pipefail
 # machine does not need the full Python/TensorRT export stack installed.
 #
 # Usage:
-#   ./scripts/export_tensorrt_in_docker.sh --model yolov8_phone
+#   ./scripts/export_tensorrt_in_docker.sh --model yolo26
+#   ./scripts/export_tensorrt_in_docker.sh --model phone_detection
+#   ./scripts/export_tensorrt_in_docker.sh --model yolo26-pose
 #   ./scripts/export_tensorrt_in_docker.sh --model arcface
 #   ./scripts/export_tensorrt_in_docker.sh --all
 
@@ -18,9 +20,8 @@ docker build \
   -t "$IMAGE_NAME" \
   "$ROOT"
 
-docker run --rm --gpus all \
-  -v "$ROOT:/workspace" \
+MSYS_NO_PATHCONV=1 docker run --rm --gpus all \
+  -v "$DIR:/workspace" \
   -w /workspace \
   "$IMAGE_NAME" \
-  python v2/scripts/export_tensorrt.py "$@"
-
+  python3 /workspace/scripts/export_tensorrt.py "$@"

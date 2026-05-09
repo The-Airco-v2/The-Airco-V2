@@ -20,6 +20,11 @@ def test_local_gpu_full_compose_mounts_full_savant_module_and_model_repo():
     assert savant["depends_on"]["session-control"]["condition"] == "service_healthy"
     assert "RTSP_URI" not in savant["environment"]
     assert savant["environment"]["ZMQ_SRC_ENDPOINT"] == "router+bind:tcp://0.0.0.0:5000"
+    assert savant["environment"]["PYTHONPATH"] == "/opt/savant:/opt/savant/module"
+    assert "./services/savant-pipeline/custom_pyfunc.py:/opt/savant/gst_plugins/python/airco_custom_pyfunc.py:ro" in volumes
+    assert "./services/savant-pipeline/redis_sink.py:/opt/savant/gst_plugins/python/redis_sink.py:ro" in volumes
+    assert "./services/savant-pipeline/event_utils.py:/opt/savant/gst_plugins/python/event_utils.py:ro" in volumes
+    assert "./services/savant-pipeline/frame_artifacts.py:/opt/savant/gst_plugins/python/frame_artifacts.py:ro" in volumes
 
 
 def test_local_gpu_lite_compose_mounts_lite_savant_module_override():
@@ -34,6 +39,11 @@ def test_local_gpu_lite_compose_mounts_lite_savant_module_override():
     assert savant["profiles"] == ["gpu"]
     assert savant["depends_on"]["session-control"]["condition"] == "service_healthy"
     assert "RTSP_URI" not in savant["environment"]
+    assert savant["environment"]["PYTHONPATH"] == "/opt/savant:/opt/savant/module"
+    assert "./services/savant-pipeline/custom_pyfunc.py:/opt/savant/gst_plugins/python/airco_custom_pyfunc.py:ro" in volumes
+    assert "./services/savant-pipeline/redis_sink.py:/opt/savant/gst_plugins/python/redis_sink.py:ro" in volumes
+    assert "./services/savant-pipeline/event_utils.py:/opt/savant/gst_plugins/python/event_utils.py:ro" in volumes
+    assert "./services/savant-pipeline/frame_artifacts.py:/opt/savant/gst_plugins/python/frame_artifacts.py:ro" in volumes
 
 
 def test_local_compose_moves_triton_and_identity_to_full_gpu_profile():
@@ -44,6 +54,9 @@ def test_local_compose_moves_triton_and_identity_to_full_gpu_profile():
     assert compose["services"]["identity-consumer"]["profiles"] == ["gpu-full"]
     command = compose["services"]["triton"]["command"]
     assert "--model-control-mode=explicit" in command
+    assert "--load-model=yolo26" in command
+    assert "--load-model=phone_detection" in command
+    assert "--load-model=yolo26-pose" in command
     assert "--load-model=arcface" in command
     assert "--load-model=osnet" in command
 
@@ -83,6 +96,19 @@ def test_main_compose_adds_ultimate_adapter_service():
     assert adapter["depends_on"]["redis"]["condition"] == "service_healthy"
     assert adapter["depends_on"]["go2rtc"]["condition"] == "service_started"
     assert adapter["depends_on"]["api"]["condition"] == "service_started"
+
+
+def test_main_compose_exposes_savant_module_on_pythonpath():
+    compose_path = Path(__file__).resolve().parent.parent / "docker-compose.yml"
+    compose = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+
+    savant = compose["services"]["savant-pipeline"]
+
+    assert savant["environment"]["PYTHONPATH"] == "/opt/savant:/opt/savant/module"
+    assert "./services/savant-pipeline/custom_pyfunc.py:/opt/savant/gst_plugins/python/airco_custom_pyfunc.py:ro" in savant["volumes"]
+    assert "./services/savant-pipeline/redis_sink.py:/opt/savant/gst_plugins/python/redis_sink.py:ro" in savant["volumes"]
+    assert "./services/savant-pipeline/event_utils.py:/opt/savant/gst_plugins/python/event_utils.py:ro" in savant["volumes"]
+    assert "./services/savant-pipeline/frame_artifacts.py:/opt/savant/gst_plugins/python/frame_artifacts.py:ro" in savant["volumes"]
 
 
 def test_local_gpu_full_compose_adds_multi_camera_savant_feeder():

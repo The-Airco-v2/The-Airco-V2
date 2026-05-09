@@ -3,35 +3,67 @@
   "description": "Production model catalog for Airco Secure V2. This is the source of truth for supported analytics models, their runtime names, artifact requirements, and source asset provenance.",
   "models": [
     {
-      "id": "yolov8_person",
-      "runtime_model_name": "yolov8_person",
+      "id": "yolo26",
+      "runtime_model_name": "yolo26",
       "purpose": "Primary full-frame person detection for session analytics.",
       "artifact": {
-        "repository_path": "v2/services/savant-pipeline/models/yolov8_person/1",
-        "required_file": "yolov8n.onnx",
-        "format": "onnx"
+        "repository_path": "v2/services/triton/models/yolo26/1",
+        "required_file": "model.plan",
+        "format": "tensorrt_plan"
       },
       "source": {
-        "status": "external-download-required",
+        "status": "available-in-repo",
         "kind": "ultralytics",
-        "reference": "yolov8n.pt",
-        "notes": "Canonical export input is Ultralytics YOLOv8n person detector. Savant owns the detector ONNX artifact and DeepStream must build or consume the runtime engine using its own TensorRT version."
+        "reference": "Triton Models/person-detetcions/yolo26s.pt",
+        "notes": "Canonical export input is the checked-in yolo26s person detector source artifact. Triton consumes the TensorRT engine built from this source."
       }
     },
     {
-      "id": "yolov8_phone",
-      "runtime_model_name": "yolov8_phone",
+      "id": "phone_detection",
+      "runtime_model_name": "phone_detection",
       "purpose": "Phone detection around tracked persons.",
       "artifact": {
-        "repository_path": "v2/services/savant-pipeline/models/yolov8_phone/1",
-        "required_file": "best.onnx",
-        "format": "onnx"
+        "repository_path": "v2/services/triton/models/phone_detection/1",
+        "required_file": "model.plan",
+        "format": "tensorrt_plan"
       },
       "source": {
         "status": "available-in-repo",
         "kind": "custom-yolo",
-        "reference": "models/phone_usage_detection/best.pt",
-        "notes": "Legacy V1-trained phone detector retained as the current source asset until a new model registry replaces it. Savant owns the detector ONNX artifact and DeepStream must build or consume the runtime engine using its own TensorRT version."
+        "reference": "Triton Models/phone_detections/best.pt",
+        "notes": "Custom phone detector source artifact checked into the workspace. Triton consumes the TensorRT engine exported from this source."
+      }
+    },
+    {
+      "id": "yolo26-pose",
+      "runtime_model_name": "yolo26-pose",
+      "purpose": "Pose detection for body landmark inference.",
+      "artifact": {
+        "repository_path": "v2/services/triton/models/yolo26-pose/1",
+        "required_file": "model.plan",
+        "format": "tensorrt_plan"
+      },
+      "source": {
+        "status": "available-in-repo",
+        "kind": "ultralytics",
+        "reference": "Triton Models/pose_detetcion/yolo26s-pose.pt",
+        "notes": "Canonical export input is the checked-in yolo26 pose source artifact. Triton consumes the TensorRT engine built from this source."
+      }
+    },
+    {
+      "id": "scrfd",
+      "runtime_model_name": "scrfd",
+      "purpose": "Face detection for SCRFD-based preprocessing and quality checks.",
+      "artifact": {
+        "repository_path": "v2/services/triton/models/scrfd/1",
+        "required_file": "model.plan",
+        "format": "tensorrt_plan"
+      },
+      "source": {
+        "status": "export-at-build-time",
+        "kind": "insightface",
+        "reference": "insightface buffalo_l / det_10g.onnx",
+        "notes": "SCRFD is exported from the InsightFace buffalo_l cache to a TensorRT plan so Triton can serve the detector with static batch 1 semantics."
       }
     },
     {

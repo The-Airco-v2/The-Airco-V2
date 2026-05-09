@@ -5,7 +5,6 @@ import CamerasPage from "@/routes/app/cameras";
 import DashboardPage from "@/routes/app/dashboard";
 import EmployeesPage from "@/routes/app/employees";
 import IdentityReviewPage from "@/routes/app/identity-review";
-import LivePage from "@/routes/app/live";
 import ReportsPage from "@/routes/app/reports";
 import SessionsPage from "@/routes/app/sessions";
 import AccountInactivePage from "@/routes/auth/account-inactive";
@@ -21,7 +20,7 @@ export const router = createBrowserRouter([
       { index: true, element: <Navigate to="/dashboard" replace /> },
       { path: "dashboard", element: <DashboardPage /> },
       { path: "cameras", element: <CamerasPage /> },
-      { path: "live", element: <LivePage /> },
+      { path: "live", element: <Navigate to="/cameras" replace /> },
       { path: "reports", element: <ReportsPage /> },
       { path: "identity-review", element: <IdentityReviewPage /> },
       { path: "employees", element: <EmployeesPage /> },

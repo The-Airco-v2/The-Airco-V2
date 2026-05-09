@@ -13,6 +13,12 @@ COPY face_aligner.py .
 COPY event_utils.py .
 COPY frame_artifacts.py .
 COPY config/ config/
+COPY custom_pyfunc.py /opt/savant/gst_plugins/python/airco_custom_pyfunc.py
+COPY redis_sink.py /opt/savant/gst_plugins/python/redis_sink.py
+COPY face_aligner.py /opt/savant/gst_plugins/python/face_aligner.py
+COPY event_utils.py /opt/savant/gst_plugins/python/event_utils.py
+COPY frame_artifacts.py /opt/savant/gst_plugins/python/frame_artifacts.py
 
 ENV MODULE_CONFIG=/opt/savant/module/module.yml
+ENV PYTHONPATH=/opt/savant:/opt/savant/module
 CMD ["/opt/savant/module/module.yml"]

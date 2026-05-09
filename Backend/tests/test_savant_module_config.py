@@ -50,14 +50,14 @@ def test_savant_module_uses_model_blocks_for_detector_elements():
     phone = next(element for element in detector_elements if element["name"] == "phone_detector")
 
     assert person["element"] == "nvinfer@detector"
-    assert person["model"]["local_path"] == "/models/yolov8_person/1"
-    assert person["model"]["model_file"] == "yolov8n.onnx"
+    assert person["model"]["local_path"] == "/models/yolo26/1"
+    assert person["model"]["model_file"] == "yolo26s.onnx"
     assert person["model"]["input"]["scale_factor"] == 0.00392156862745098
     assert person["model"]["output"]["layer_names"] == ["output0"]
     assert person["model"]["output"]["num_detected_classes"] == 80
 
     assert phone["element"] == "nvinfer@detector"
-    assert phone["model"]["local_path"] == "/models/yolov8_phone/1"
+    assert phone["model"]["local_path"] == "/models/phone_detection/1"
     assert phone["model"]["model_file"] == "best.onnx"
     assert phone["model"]["input"]["scale_factor"] == 0.00392156862745098
     assert phone["model"]["input"]["object"] == "person_detector.person"
@@ -89,8 +89,8 @@ def test_local_savant_module_is_person_only_and_keeps_redis_sink():
     ]
 
     assert [element["name"] for element in detector_elements] == ["person_detector"]
-    assert detector_elements[0]["model"]["local_path"] == "/models/yolov8_person/1"
-    assert detector_elements[0]["model"]["model_file"] == "yolov8n.onnx"
+    assert detector_elements[0]["model"]["local_path"] == "/models/yolo26/1"
+    assert detector_elements[0]["model"]["model_file"] == "yolo26s.onnx"
     assert detector_elements[0]["model"]["input"]["color_format"] == "rgb"
     assert detector_elements[0]["model"]["input"]["scale_factor"] == 0.00392156862745098
     assert any(

@@ -14,6 +14,8 @@ from airco.config import settings
 logger = logging.getLogger(__name__)
 
 _client: Minio | None = None
+EMPLOYEE_BUCKET_NAME = "airco-employee"
+EMPLOYEE_FACE_PREFIX = "employee-faces"
 
 
 def get_minio() -> Minio:
@@ -46,6 +48,81 @@ def upload_bytes(
         content_type=content_type,
     )
     return object_name
+
+
+def delete_object(object_name: str) -> None:
+    """Delete a single object from the default MinIO bucket."""
+    client = get_minio()
+    try:
+        client.remove_object(settings.minio_bucket, object_name)
+    except Exception as e:
+        logger.warning("Failed to delete object %s from bucket %s: %s", object_name, settings.minio_bucket, e)
+
+
+def upload_employee_face(
+    object_name: str,
+    data: bytes,
+    content_type: str = "image/jpeg",
+) -> str:
+    """Upload employee face image to airco-employee bucket. Returns the object name (path)."""
+    client = get_minio()
+    # Ensure employee bucket exists
+    if not client.bucket_exists(EMPLOYEE_BUCKET_NAME):
+        client.make_bucket(EMPLOYEE_BUCKET_NAME)
+    
+    # Prefix with employee-faces/ for organization
+    prefixed_object_name = f"{EMPLOYEE_FACE_PREFIX}/{object_name.lstrip('/')}"
+    
+    client.put_object(
+        EMPLOYEE_BUCKET_NAME,
+        prefixed_object_name,
+        io.BytesIO(data),
+        length=len(data),
+        content_type=content_type,
+    )
+    return prefixed_object_name
+
+
+def upload_employee_asset(
+    object_name: str,
+    data: bytes,
+    content_type: str = "application/octet-stream",
+) -> str:
+    """Upload an arbitrary employee training artifact to airco-employee bucket."""
+    client = get_minio()
+    if not client.bucket_exists(EMPLOYEE_BUCKET_NAME):
+        client.make_bucket(EMPLOYEE_BUCKET_NAME)
+
+    prefixed_object_name = object_name.lstrip("/")
+    client.put_object(
+        EMPLOYEE_BUCKET_NAME,
+        prefixed_object_name,
+        io.BytesIO(data),
+        length=len(data),
+        content_type=content_type,
+    )
+    return prefixed_object_name
+
+
+def delete_employee_face(object_name: str) -> None:
+    """Delete employee face image from airco-employee bucket."""
+    client = get_minio()
+    try:
+        prefixed_object_name = object_name if object_name.startswith(f"{EMPLOYEE_FACE_PREFIX}/") else f"{EMPLOYEE_FACE_PREFIX}/{object_name.lstrip('/')}"
+        client.remove_object(EMPLOYEE_BUCKET_NAME, prefixed_object_name)
+    except Exception as e:
+        logger.warning("Failed to delete employee face %s from bucket %s: %s", object_name, EMPLOYEE_BUCKET_NAME, e)
+
+
+def delete_objects_by_prefix(prefix: str) -> None:
+    """Delete all objects with given prefix from the default bucket."""
+    client = get_minio()
+    try:
+        objects = client.list_objects(settings.minio_bucket, prefix=prefix, recursive=True)
+        for obj in objects:
+            client.remove_object(settings.minio_bucket, obj.object_name)
+    except Exception as e:
+        logger.warning("Failed to delete objects with prefix %s from bucket %s: %s", prefix, settings.minio_bucket, e)
 
 
 def get_presigned_url(object_name: str, expires: timedelta = timedelta(hours=1)) -> str:

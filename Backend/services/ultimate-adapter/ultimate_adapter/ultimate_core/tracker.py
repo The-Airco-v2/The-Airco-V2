@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 from collections import OrderedDict, defaultdict, deque
+import inspect
+import os
 from pathlib import Path
 from typing import Any, List, Mapping, Optional, Tuple
 
 import numpy as np
+
+try:
+    import tritonclient.grpc as grpcclient
+except Exception:  # pragma: no cover - Triton is only required in GPU/runtime deployments
+    grpcclient = None
+
+from airco.config import settings
 
 from .birth import BirthCertificateSystem
 from .config import UltimateCoreConfig, coerce_core_config
@@ -33,17 +42,122 @@ def resolve_device(requested: str) -> str:
 
 
 def load_detector_model(model_path: str, device: str):
-    from ultralytics import YOLO
+    """Load the detector used by the Ultimate tracker.
 
-    model_path = str(model_path)
-    suffix = Path(model_path).suffix.lower()
-    model = YOLO(model_path)
-    if suffix not in {".onnx", ".engine"}:
-        try:
-            model.to(device)
-        except Exception:
-            pass
-    return model
+    The production path now uses Triton-served YOLO26 instead of a local Ultralytics
+    checkpoint. The returned object preserves the minimal callable interface expected
+    by `detect()`: it can be called with a frame and returns a sequence with `boxes`
+    items exposing `xyxy`, `conf`, and `cls` tensors.
+    """
+
+    model_path = str(model_path or "")
+    model_suffix = Path(model_path).suffix.lower()
+    local_suffixes = {".pt", ".onnx", ".engine", ".torchscript", ".tflite"}
+
+    if model_path and (Path(model_path).exists() or model_suffix in local_suffixes):
+        from ultralytics import YOLO
+
+        model = YOLO(model_path)
+        if model_suffix not in {".onnx", ".engine"}:
+            try:
+                model.to(device)
+            except Exception:
+                pass
+        return model
+
+    if grpcclient is None:
+        raise RuntimeError("tritonclient is required to load the Ultimate Triton detector")
+
+    triton_model_name = model_path or "yolo26"
+
+    class _TensorWrapper:
+        def __init__(self, values: np.ndarray):
+            self._values = np.asarray(values, dtype=np.float32)
+
+        def __getitem__(self, item):
+            value = self._values[item]
+            if np.isscalar(value):
+                return float(value)
+            return _TensorWrapper(np.asarray(value, dtype=np.float32))
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return self._values
+
+
+    class _BoxWrapper:
+        def __init__(self, xyxy: np.ndarray, conf: float, cls: float):
+            self.xyxy = _TensorWrapper(np.asarray([xyxy], dtype=np.float32))
+            self.conf = _TensorWrapper(np.asarray([conf], dtype=np.float32))
+            self.cls = _TensorWrapper(np.asarray([cls], dtype=np.float32))
+
+    class _ResultWrapper:
+        def __init__(self, boxes: list[_BoxWrapper]):
+            self.boxes = boxes if boxes else None
+
+    class TritonYOLODetector:
+        def __init__(self, model_name: str):
+            self.model_name = model_name
+            self.client = grpcclient.InferenceServerClient(url=settings.triton_url)
+
+        def to(self, *_args, **_kwargs):
+            return self
+
+        def __call__(self, frame: np.ndarray, *, conf: float, iou: float, classes, imgsz: int, device: str, verbose: bool = False):
+            del device, verbose
+            image = np.asarray(frame)
+            if image.ndim != 3 or image.shape[2] != 3:
+                raise ValueError(f"Expected HWC BGR frame with 3 channels, got shape {image.shape}")
+
+            # Triton yolo26 is exported with a fixed 640x640 input contract.
+            # Ignore the tracker config image size here so we always match the
+            # Triton model's expected input tensor shape.
+            target_size = 640
+            resized = image
+            if resized.shape[0] != target_size or resized.shape[1] != target_size:
+                import cv2
+
+                resized = cv2.resize(resized, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
+
+            resized = resized.astype(np.float32) / 255.0
+            chw = np.transpose(resized, (2, 0, 1))[np.newaxis, ...]
+
+            inp = grpcclient.InferInput("images", chw.shape, "FP32")
+            inp.set_data_from_numpy(chw)
+
+            output = grpcclient.InferRequestedOutput("output0")
+            response = self.client.infer(self.model_name, [inp], outputs=[output])
+            raw = response.as_numpy("output0")
+            if raw is None:
+                return [_ResultWrapper([])]
+
+            raw = np.asarray(raw)
+            if raw.ndim == 3:
+                raw = raw[0]
+            elif raw.ndim == 1:
+                raw = raw.reshape(1, -1)
+
+            h, w = image.shape[:2]
+            scale_x = w / float(target_size)
+            scale_y = h / float(target_size)
+
+            boxes: list[_BoxWrapper] = []
+            for row in raw:
+                if row.size < 6:
+                    continue
+                x1, y1, x2, y2, score, cls = map(float, row[:6])
+                if score < float(conf):
+                    continue
+                if classes is not None and len(classes) > 0 and int(cls) not in set(int(c) for c in classes):
+                    continue
+                xyxy = np.array([x1 * scale_x, y1 * scale_y, x2 * scale_x, y2 * scale_y], dtype=np.float32)
+                boxes.append(_BoxWrapper(xyxy, score, cls))
+
+            return [_ResultWrapper(boxes)]
+
+    return TritonYOLODetector(triton_model_name)
 
 
 class UltimateStableTrackerV2:
@@ -81,13 +195,18 @@ class UltimateStableTrackerV2:
         )
 
         self.detector = detector if detector is not None else load_detector_model(self.cfg["det_model"], self.device)
+        self._tracker_uses_external_reid = False
+        if feature_extractor is not None:
+            self.feature_extractor = feature_extractor
+        else:
+            base_extractor = RobustFeatureExtractor(self.cfg["reid_model"], self.device, self.cfg["fp16"], self.cfg)
+            self.feature_extractor = MultiScalePyramidExtractor(base_extractor, self.cfg)
         if tracker_backend is not None:
             self.tracker = tracker_backend
         else:
             from boxmot.trackers import StrongSort
 
-            self.tracker = StrongSort(
-                reid_weights=Path(self.cfg["reid_model"]),
+            strongsort_kwargs = dict(
                 device=self.device,
                 half=self.cfg["fp16"],
                 min_conf=self.cfg["det_conf"],
@@ -99,12 +218,27 @@ class UltimateStableTrackerV2:
                 ema_alpha=self.cfg["ema_alpha"],
                 max_age=self.cfg["max_age"],
             )
-
-        if feature_extractor is not None:
-            self.feature_extractor = feature_extractor
-        else:
-            base_extractor = RobustFeatureExtractor(self.cfg["reid_model"], self.device, self.cfg["fp16"], self.cfg)
-            self.feature_extractor = MultiScalePyramidExtractor(base_extractor, self.cfg)
+            tracker_reid_model = getattr(self.feature_extractor, "tracker_reid_model", None)
+            if tracker_reid_model is None:
+                tracker_reid_model = getattr(getattr(self.feature_extractor, "base", None), "tracker_reid_model", None)
+            signature = inspect.signature(StrongSort.__init__)
+            if tracker_reid_model is not None and "reid_model" in signature.parameters:
+                self.tracker = StrongSort(reid_model=tracker_reid_model, **strongsort_kwargs)
+                self._tracker_uses_external_reid = True
+            else:
+                bootstrap_weights = self.cfg["reid_model"]
+                if not str(bootstrap_weights).lower().endswith((".pt", ".onnx", ".engine", ".torchscript", ".tflite")):
+                    bootstrap_weights = os.getenv("ULTIMATE_BOOTSTRAP_REID_WEIGHTS", "osnet_x0_25_msmt17.pt")
+                self.tracker = StrongSort(reid_weights=Path(bootstrap_weights), **strongsort_kwargs)
+                if tracker_reid_model is not None:
+                    # Older BoxMOT builds still require a bootstrap weights path during
+                    # initialization, but we replace the appearance backend immediately
+                    # after construction and pass embeddings explicitly during updates.
+                    try:
+                        self.tracker.model = tracker_reid_model
+                    except Exception:
+                        pass
+                    self._tracker_uses_external_reid = True
 
         self.registry = registry
         self.birth_system = BirthCertificateSystem(self.cfg)
@@ -162,7 +296,27 @@ class UltimateStableTrackerV2:
             return self._last_results
         self._last_detections = detections
         self.last_detection_frame = self.frame_idx
-        tracks = self.tracker.update(detections, frame)
+        tracker_embs = None
+        if self._tracker_uses_external_reid and detections is not None and len(detections) > 0:
+            boxes = [
+                (int(det[0]), int(det[1]), int(det[2]), int(det[3]))
+                for det in np.asarray(detections)
+            ]
+            confs = [float(det[4]) for det in np.asarray(detections)]
+            feats = self.feature_extractor.extract_batch(frame, boxes, confs)
+            if feats:
+                embeddings = []
+                for deep_feat, color_feat in feats:
+                    emb = deep_feat if deep_feat is not None else color_feat
+                    if emb is None:
+                        break
+                    embeddings.append(np.asarray(emb, dtype=np.float32))
+                if len(embeddings) == len(feats):
+                    tracker_embs = np.stack(embeddings, axis=0).astype(np.float32)
+        if tracker_embs is not None:
+            tracks = self.tracker.update(detections, frame, embs=tracker_embs)
+        else:
+            tracks = self.tracker.update(detections, frame)
         results = []
         observations = []
         current_tracks = set()
@@ -280,4 +434,3 @@ class UltimateStableTrackerV2:
     def track_frame(self, frame: np.ndarray) -> List[Tuple]:
         detections = self.detect(frame)
         return self.process_detections(frame, detections)
-

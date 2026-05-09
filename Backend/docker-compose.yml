@@ -138,7 +138,7 @@ services:
       - "8002:8002"
     volumes:
       - ./services/triton/models:/models
-    command: tritonserver --model-repository=/models --model-control-mode=explicit --load-model=arcface --load-model=osnet --load-model=scrfd --strict-model-config=false
+    command: tritonserver --model-repository=/models --model-control-mode=explicit --load-model=yolo26 --load-model=phone_detection --load-model=yolo26-pose --load-model=arcface --load-model=osnet --load-model=scrfd --strict-model-config=false
     deploy:
       resources:
         reservations:
@@ -156,9 +156,15 @@ services:
       <<: *shared-env
       ZMQ_SRC_ENDPOINT: ""
       ZMQ_SINK_ENDPOINT: ""
+      PYTHONPATH: /opt/savant:/opt/savant/module
     volumes:
       - ./services/savant-pipeline:/opt/savant/module
       - ./services/savant-pipeline/models:/models
+      - ./services/savant-pipeline/custom_pyfunc.py:/opt/savant/gst_plugins/python/airco_custom_pyfunc.py:ro
+      - ./services/savant-pipeline/redis_sink.py:/opt/savant/gst_plugins/python/redis_sink.py:ro
+      - ./services/savant-pipeline/face_aligner.py:/opt/savant/gst_plugins/python/face_aligner.py:ro
+      - ./services/savant-pipeline/event_utils.py:/opt/savant/gst_plugins/python/event_utils.py:ro
+      - ./services/savant-pipeline/frame_artifacts.py:/opt/savant/gst_plugins/python/frame_artifacts.py:ro
     deploy:
       resources:
         reservations:

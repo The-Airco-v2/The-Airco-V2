@@ -22,6 +22,7 @@ RUN pip install --no-cache-dir \
     pillow \
     scipy \
     ultralytics \
+    tritonclient[grpc]>=2.42 \
     boxmot
 
 COPY shared /app/shared

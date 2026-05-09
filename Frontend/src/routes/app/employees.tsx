@@ -1,11 +1,11 @@
-import { Plus, Trash2, Upload, Users } from "lucide-react";
+import { Plus, Trash2, Users } from "lucide-react";
 import { useState } from "react";
+import { FaceTrainingPanel } from "@/components/employees/FaceTrainingPanel";
 import { PageHeader } from "@/components/shared/PageHeader";
 import { StatusBadge } from "@/components/shared/StatusBadge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   AlertDialog,
-  AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
@@ -16,14 +16,13 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   useCreateEmployee,
   useDeleteEmployee,
+  useDeleteEmployeeEnrollmentData,
   useEmployees,
-  useEnrollEmployee,
 } from "@/hooks/useEmployees";
 import { toast } from "sonner";
 
@@ -31,15 +30,12 @@ export default function EmployeesPage() {
   const { data: employees, isLoading, error } = useEmployees();
   const createEmployee = useCreateEmployee();
   const deleteEmployee = useDeleteEmployee();
-  const enrollEmployee = useEnrollEmployee();
+  const deleteEnrollmentData = useDeleteEmployeeEnrollmentData();
 
   const [addOpen, setAddOpen] = useState(false);
-  const [enrollId, setEnrollId] = useState<string | null>(null);
-  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
   const [name, setName] = useState("");
   const [department, setDepartment] = useState("");
-  const [enrollFile, setEnrollFile] = useState<File | null>(null);
-  const [enrollAngle, setEnrollAngle] = useState("front");
 
   const handleCreate = () => {
     createEmployee.mutate(
@@ -56,33 +52,29 @@ export default function EmployeesPage() {
     );
   };
 
-  const handleEnroll = () => {
-    if (!enrollId || !enrollFile) {
-      return;
-    }
-    enrollEmployee.mutate(
-      { id: enrollId, file: enrollFile, angle: enrollAngle },
-      {
-        onSuccess: () => {
-          toast.success("Photo enrolled");
-          setEnrollId(null);
-          setEnrollFile(null);
-        },
-        onError: () => toast.error("Enrollment failed"),
-      },
-    );
-  };
-
   const handleDelete = () => {
-    if (!deleteId) {
+    if (!deleteTarget) {
       return;
     }
-    deleteEmployee.mutate(deleteId, {
+    deleteEmployee.mutate(deleteTarget.id, {
       onSuccess: () => {
         toast.success("Employee removed");
-        setDeleteId(null);
+        setDeleteTarget(null);
       },
       onError: () => toast.error("Failed to remove employee"),
+    });
+  };
+
+  const handleDeleteEnrollmentData = () => {
+    if (!deleteTarget) {
+      return;
+    }
+    deleteEnrollmentData.mutate(deleteTarget.id, {
+      onSuccess: () => {
+        toast.success("Employee enrollment data removed");
+        setDeleteTarget(null);
+      },
+      onError: () => toast.error("Failed to remove enrollment data"),
     });
   };
 
@@ -112,7 +104,12 @@ export default function EmployeesPage() {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-zinc-800">
-              {["Name", "Department", "Enrollment", ""].map((h) => (
+              {[
+                "Name",
+                "Department",
+                "Enrollment",
+                "Actions",
+              ].map((h) => (
                 <th key={h} className="px-5 py-3 text-left text-xs font-medium uppercase tracking-wide text-zinc-500">
                   {h}
                 </th>
@@ -155,18 +152,10 @@ export default function EmployeesPage() {
                   <td className="px-5 py-3.5">
                     <div className="flex items-center justify-end gap-2">
                       <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-7 gap-1.5 text-xs text-zinc-400 hover:bg-sky-500/10 hover:text-sky-400"
-                        onClick={() => setEnrollId(emp.id)}
-                      >
-                        <Upload className="h-3 w-3" /> Enroll
-                      </Button>
-                      <Button
                         size="icon"
                         variant="ghost"
                         className="h-7 w-7 text-zinc-500 hover:bg-red-500/10 hover:text-red-400"
-                        onClick={() => setDeleteId(emp.id)}
+                        onClick={() => setDeleteTarget({ id: emp.id, name: emp.name })}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
@@ -178,6 +167,8 @@ export default function EmployeesPage() {
           </tbody>
         </table>
       </div>
+
+      <FaceTrainingPanel employees={employees} />
 
       <Sheet open={addOpen} onOpenChange={setAddOpen}>
         <SheetContent className="w-[400px] border-zinc-800 bg-zinc-900 text-zinc-50">
@@ -217,67 +208,42 @@ export default function EmployeesPage() {
         </SheetContent>
       </Sheet>
 
-      <Sheet open={!!enrollId} onOpenChange={(o) => !o && setEnrollId(null)}>
-        <SheetContent className="w-[400px] border-zinc-800 bg-zinc-900 text-zinc-50">
-          <SheetHeader>
-            <SheetTitle className="text-zinc-50">Enroll Photo</SheetTitle>
-          </SheetHeader>
-          <div className="mt-6 space-y-4">
-            <div className="space-y-1.5">
-              <Label className="text-zinc-300">Photo</Label>
-              <Input
-                type="file"
-                accept="image/*"
-                onChange={(e) => setEnrollFile(e.target.files?.[0] ?? null)}
-                className="border-zinc-700 bg-zinc-800 text-zinc-300 file:rounded file:border-0 file:bg-zinc-700 file:px-3 file:py-1 file:text-xs file:text-zinc-300"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label className="text-zinc-300">Angle</Label>
-              <Select value={enrollAngle} onValueChange={setEnrollAngle}>
-                <SelectTrigger className="border-zinc-700 bg-zinc-800 text-zinc-300">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className="border-zinc-700 bg-zinc-900">
-                  {["front", "left", "right", "up", "down"].map((a) => (
-                    <SelectItem key={a} value={a} className="capitalize text-zinc-300">
-                      {a}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <SheetFooter className="mt-8">
-            <Button variant="ghost" onClick={() => setEnrollId(null)} className="text-zinc-400">
-              Cancel
-            </Button>
-            <Button
-              onClick={handleEnroll}
-              disabled={!enrollFile || enrollEmployee.isPending}
-              className="bg-sky-500 text-white hover:bg-sky-400"
-            >
-              {enrollEmployee.isPending ? "Enrolling…" : "Enroll"}
-            </Button>
-          </SheetFooter>
-        </SheetContent>
-      </Sheet>
-
-      <AlertDialog open={!!deleteId} onOpenChange={(o) => !o && setDeleteId(null)}>
+      <AlertDialog open={!!deleteTarget} onOpenChange={(open: boolean) => !open && setDeleteTarget(null)}>
         <AlertDialogContent className="border-zinc-800 bg-zinc-900">
           <AlertDialogHeader>
-            <AlertDialogTitle className="text-zinc-50">Remove employee?</AlertDialogTitle>
+            <AlertDialogTitle className="text-zinc-50">Choose what to remove</AlertDialogTitle>
             <AlertDialogDescription className="text-zinc-400">
-              This will permanently remove the employee and their enrollment data.
+              <span className="block text-zinc-300">Employee: {deleteTarget?.name}</span>
+              <br />
+              Select the action below:
+              <br /><br />
+              <span className="block text-zinc-200">• <strong>Remove data only</strong> clears the face training data, job history, embeddings, templates, sample photos, and export files.</span>
+              <span className="block text-zinc-200">• <strong>Remove employee</strong> does everything above and also deletes the employee record.</span>
+              <br />
+              This action cannot be undone.
+              <br /><br />
+              If you only want to clear enrollment history but keep the employee in the list, use <strong>Remove data only</strong>.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel className="border-zinc-700 bg-transparent text-zinc-300 hover:bg-zinc-800">
               Cancel
             </AlertDialogCancel>
-            <AlertDialogAction onClick={handleDelete} className="bg-red-600 text-white hover:bg-red-500">
-              Remove
-            </AlertDialogAction>
+            <Button
+              variant="outline"
+              onClick={handleDeleteEnrollmentData}
+              disabled={!deleteTarget || deleteEnrollmentData.isPending || deleteEmployee.isPending}
+              className="border-zinc-700 bg-transparent text-zinc-200 hover:bg-zinc-800 hover:text-zinc-50"
+            >
+              {deleteEnrollmentData.isPending ? "Removing data…" : "Remove data only"}
+            </Button>
+            <Button
+              onClick={handleDelete}
+              disabled={!deleteTarget || deleteEmployee.isPending || deleteEnrollmentData.isPending}
+              className="bg-red-600 text-white hover:bg-red-500"
+            >
+              {deleteEmployee.isPending ? "Removing employee…" : "Remove employee"}
+            </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

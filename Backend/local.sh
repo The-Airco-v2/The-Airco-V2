@@ -63,14 +63,14 @@ case "${1:-}" in
     echo "Starting Airco Secure Backend (full GPU mode)..."
 
     echo ""
-    echo "Ensuring local Triton identity models are built for this GPU stack..."
+    echo "Ensuring local Triton models are built for this GPU stack..."
     bash "$DIR/scripts/ensure_local_triton_models.sh"
 
     echo ""
     echo "Ensuring local Savant detector models are prepared for this GPU stack..."
     bash "$DIR/scripts/ensure_local_savant_models.sh"
 
-    run_compose_gpu_full up -d --build
+    run_compose_gpu_full up -d
 
     echo ""
     echo "Running Alembic migrations..."
@@ -99,7 +99,7 @@ case "${1:-}" in
     echo "Ensuring local Savant detector models are prepared for this GPU stack..."
     bash "$DIR/scripts/ensure_local_savant_models.sh"
 
-    run_compose_gpu up -d --build
+    run_compose_gpu up -d
 
     echo ""
     echo "Running Alembic migrations..."
@@ -122,7 +122,7 @@ case "${1:-}" in
 
   *)
     echo "Starting Airco Secure Backend (API-only mode, no GPU services)..."
-    run_compose up -d --build
+    run_compose up -d
 
     echo ""
     echo "Running Alembic migrations..."

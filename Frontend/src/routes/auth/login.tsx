@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { Eye, EyeOff, Loader2, Lock, Mail, Shield } from "lucide-react";
+import { Eye, EyeOff, Loader2, Lock, Mail } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -103,8 +103,8 @@ export default function LoginPage() {
         <div className="absolute -bottom-20 -right-20 h-72 w-72 rounded-full bg-violet-500/10 blur-3xl" />
 
         <div className="relative flex items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-sky-500">
-            <Shield className="h-5 w-5 text-white" />
+          <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-xl bg-zinc-950 ring-1 ring-zinc-700/80">
+            <img src="/logo.png" alt="Airco Secure" className="h-full w-full object-contain p-0.5" />
           </div>
           <span className="text-lg font-semibold text-zinc-50">Airco Secure</span>
         </div>
@@ -137,8 +137,8 @@ export default function LoginPage() {
           transition={{ duration: 0.4 }}
         >
           <div className="mb-8 flex items-center gap-2.5 lg:hidden">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-500">
-              <Shield className="h-4 w-4 text-white" />
+            <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-lg bg-zinc-950 ring-1 ring-zinc-700/80">
+              <img src="/logo.png" alt="Airco Secure" className="h-full w-full object-contain p-0.5" />
             </div>
             <span className="font-semibold text-zinc-50">Airco Secure</span>
           </div>

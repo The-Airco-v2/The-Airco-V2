@@ -21,8 +21,8 @@ pipeline:
     - element: nvinfer@detector
       name: person_detector
       model:
-        local_path: /models/yolov8_person/1
-        model_file: yolov8n.onnx
+        local_path: /models/yolo26/1
+        model_file: yolo26s.onnx
         batch_size: 1
         precision: fp16
         input:
@@ -58,7 +58,7 @@ pipeline:
         ll-config-file: /opt/savant/module/config/tracker.yml
 
     - element: pyfunc
-      module: custom_pyfunc
+      module: airco_custom_pyfunc
       class_name: CropExtractor
       kwargs:
         face_min_size: 40

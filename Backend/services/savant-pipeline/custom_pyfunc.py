@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
+import time
 
 import cv2
 import numpy as np
@@ -28,6 +30,8 @@ from event_utils import is_full_frame_detection, normalize_track_id
 from frame_artifacts import store_track_artifacts
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.info("custom_pyfunc module imported")
 
 
 class CropExtractor(NvDsPyFuncPlugin):
@@ -36,11 +40,16 @@ class CropExtractor(NvDsPyFuncPlugin):
     Attached to frame metadata for downstream Redis sink to publish.
     """
 
-    def __init__(self, face_min_size: int = 20, body_min_size: int = 80,
-                 snapshot_interval_frames: int = 30,
-                 triton_url: str = "triton:8001",
-                 use_scrfd: bool = True):
+    def __init__(
+        self,
+        face_min_size: int = 20,
+        body_min_size: int = 80,
+        snapshot_interval_frames: int = 30,
+        triton_url: str = "triton:8001",
+        use_scrfd: bool = True):
         super().__init__()
+        logger.warning("[CropExtractor] instantiated – face_min_size=%s, use_scrfd=%s", face_min_size, use_scrfd)
+        print("[CropExtractor] __init__ called")
         self.face_min_size = face_min_size
         self.body_min_size = body_min_size
         self.snapshot_interval = snapshot_interval_frames
@@ -51,117 +60,143 @@ class CropExtractor(NvDsPyFuncPlugin):
         self.use_scrfd = str(use_scrfd).lower() in ("true", "1", "yes")
         self._triton_client = None
         self._scrfd_session = None
+        self._scrfd_failures = 0
+        self._scrfd_disabled_reason: str | None = None
 
     def process_frame(self, buffer, frame_meta):
         """Called by Savant for each frame. Annotates metadata with crop data."""
         source_id = frame_meta.source_id if hasattr(frame_meta, 'source_id') else "unknown"
         self._frame_counter[source_id] = self._frame_counter.get(source_id, 0) + 1
         frame_num = self._frame_counter[source_id]
+        logger.warning("[CropExtractor] processing frame %s source=%s", frame_num, source_id)
+        print(f"[CropExtractor] processing frame {frame_num} source={source_id}")
+        started = time.perf_counter()
 
-        if frame_num % self._debug_every == 0:
-            self._debug_detector_outputs(frame_meta, source_id, frame_num)
+        try:
+            if frame_num <= 3 or frame_num % self._debug_every == 0:
+                logger.info(
+                    "[CropExtractor] source=%s frame=%s start use_scrfd=%s disabled_reason=%s",
+                    source_id,
+                    frame_num,
+                    self.use_scrfd,
+                    self._scrfd_disabled_reason,
+                )
 
-        with get_nvds_buf_surface(buffer, frame_meta.frame_meta) as frame_np_rgba:
-            frame_np = cv2.cvtColor(frame_np_rgba, cv2.COLOR_RGBA2BGR)
-            raw_frame_num = int(getattr(frame_meta, "frame_num", frame_num))
+            if frame_num % self._debug_every == 0:
+                self._debug_detector_outputs(frame_meta, source_id, frame_num)
 
-            for obj_meta in self._get_objects(frame_meta):
-                if getattr(obj_meta, "is_primary", False):
-                    continue
-                track_id = normalize_track_id(getattr(obj_meta, "track_id", -1))
-                if track_id is None:
-                    continue
+            with get_nvds_buf_surface(buffer, frame_meta.frame_meta) as frame_np_rgba:
+                frame_np = cv2.cvtColor(frame_np_rgba, cv2.COLOR_RGBA2BGR)
+                raw_frame_num = int(getattr(frame_meta, "frame_num", frame_num))
+                object_count = 0
 
-                bbox = self._get_bbox(obj_meta)
-                if bbox is None:
-                    continue
-                if is_full_frame_detection(bbox, frame_meta):
-                    continue
+                for obj_meta in self._get_objects(frame_meta):
+                    object_count += 1
+                    if getattr(obj_meta, "is_primary", False):
+                        continue
+                    track_id = normalize_track_id(getattr(obj_meta, "track_id", -1))
+                    if track_id is None:
+                        continue
 
-                x1, y1, x2, y2 = bbox
-                h, w = y2 - y1, x2 - x1
+                    bbox = self._get_bbox(obj_meta)
+                    if bbox is None:
+                        continue
+                    if is_full_frame_detection(bbox, frame_meta):
+                        continue
 
-                # Skip tiny detections
-                if h < self.body_min_size or w < self.body_min_size // 2:
-                    continue
+                    x1, y1, x2, y2 = bbox
+                    h, w = y2 - y1, x2 - x1
 
-                # Body crop (full person bbox)
-                body_crop = frame_np[int(y1):int(y2), int(x1):int(x2)]
-                track_crops: list[dict] = []
-                track_snapshot: dict | None = None
+                    # Skip tiny detections
+                    if h < self.body_min_size or w < self.body_min_size // 2:
+                        continue
 
-                if body_crop.size > 0:
-                    body_quality = self._compute_quality(body_crop)
-                    body_b64 = self._encode_crop(body_crop, target_size=(128, 256))
-                    crop_payload = {
-                        "type": "body_crop",
-                        "b64": body_b64,
-                        "bbox": bbox,
-                        "quality": body_quality,
-                    }
-                    track_crops.append(crop_payload)
-                    self._attach_crop(obj_meta, crop_payload)
+                    # Prepare containers for crops and snapshot
+                    track_crops: list[dict] = []
+                    track_snapshot: dict | None = None
 
-                # Face detection — use SCRFD if available, fall back to heuristic
-                if self.use_scrfd:
-                    face_results = self._detect_face_scrfd(body_crop)
-                    if face_results is not None:
-                        face_crop_aligned, face_bbox_local, face_quality, face_conf, kpts = face_results
-                        face_bbox = [
-                            x1 + face_bbox_local[0], y1 + face_bbox_local[1],
-                            x1 + face_bbox_local[2], y1 + face_bbox_local[3],
-                        ]
-                        face_b64 = self._encode_crop(face_crop_aligned)
-                        crop_payload = {
-                            "type": "face_crop",
-                            "b64": face_b64,
-                            "bbox": face_bbox,
-                            "quality": face_quality,
-                            "face_confidence": face_conf,
-                            "keypoints": kpts.tolist() if kpts is not None else None,
-                            "aligned": True,
-                        }
-                        track_crops.append(crop_payload)
-                        self._attach_crop(obj_meta, crop_payload)
-                else:
-                    # Fallback: upper 40% heuristic
-                    face_y2 = y1 + h * 0.4
-                    face_crop = frame_np[int(y1):int(face_y2), int(x1):int(x2)]
-                    if face_crop.size > 0 and face_crop.shape[0] >= self.face_min_size:
-                        face_quality = self._compute_quality(face_crop)
-                        face_b64 = self._encode_crop(face_crop, target_size=(112, 112))
-                        face_bbox = [x1, y1, x2, face_y2]
-                        crop_payload = {
-                            "type": "face_crop",
-                            "b64": face_b64,
-                            "bbox": face_bbox,
-                            "quality": face_quality,
-                        }
-                        track_crops.append(crop_payload)
-                        self._attach_crop(obj_meta, crop_payload)
+                    # Extract the person region (used for face detection)
+                    person_crop = frame_np[int(y1):int(y2), int(x1):int(x2)]
+                    # Face detection — use SCRFD if available, fall back to heuristic
+                    if self.use_scrfd:
+                        face_results = self._detect_face_scrfd(person_crop)
+                        if face_results is not None:
+                            face_crop_aligned, face_bbox_local, face_quality, face_conf, kpts = face_results
+                            face_bbox = [
+                                x1 + face_bbox_local[0], y1 + face_bbox_local[1],
+                                x1 + face_bbox_local[2], y1 + face_bbox_local[3],
+                            ]
+                            face_b64 = self._encode_crop(face_crop_aligned)
+                            crop_payload = {
+                                "type": "face_crop",
+                                "b64": face_b64,
+                                "bbox": face_bbox,
+                                "quality": face_quality,
+                                "face_confidence": face_conf,
+                                "keypoints": kpts.tolist() if kpts is not None else None,
+                                "aligned": True,
+                            }
+                            track_crops.append(crop_payload)
+                            self._attach_crop(obj_meta, crop_payload)
+                    else:
+                        # Fallback: upper 40% heuristic on the person crop
+                        face_y2 = y1 + h * 0.4
+                        face_crop = person_crop[int(0):int(face_y2 - y1), int(0):int(x2 - x1)]
+                        if face_crop.size > 0 and face_crop.shape[0] >= self.face_min_size:
+                            face_quality = self._compute_quality(face_crop)
+                            face_b64 = self._encode_crop(face_crop, target_size=(112, 112))
+                            face_bbox = [x1, y1, x2, face_y2]
+                            crop_payload = {
+                                "type": "face_crop",
+                                "b64": face_b64,
+                                "bbox": face_bbox,
+                                "quality": face_quality,
+                            }
+                            track_crops.append(crop_payload)
+                            self._attach_crop(obj_meta, crop_payload)
 
-                # Snapshot selection (periodic best-frame)
-                if frame_num % self.snapshot_interval == 0:
-                    quality = self._compute_quality(body_crop if body_crop.size > 0 else frame_np)
-                    track_key = f"{source_id}:{track_id}"
-                    if quality > self._best_scores.get(track_key, 0):
-                        self._best_scores[track_key] = quality
-                        full_b64 = self._encode_crop(frame_np)
-                        track_snapshot = {
-                            "full_b64": full_b64,
-                            "bbox": bbox,
-                            "quality": quality,
-                        }
-                        self._attach_snapshot(obj_meta, track_snapshot)
+                    # Snapshot selection (periodic best face only)
+                    if frame_num % self.snapshot_interval == 0:
+                        face_payload = next((c for c in track_crops if c.get("type") == "face_crop"), None)
+                        if face_payload:
+                            quality = face_payload["quality"]
+                            track_key = f"{source_id}:{track_id}"
+                        else:
+                            track_key = ""
+                        if face_payload and quality > self._best_scores.get(track_key, 0):
+                            self._best_scores[track_key] = quality
+                            track_snapshot = {
+                                "full_b64": face_payload["b64"],
+                                "bbox": [0, 0, 112, 112],
+                                "face_bbox": face_payload["bbox"],
+                                "kind": "face",
+                                "quality": quality,
+                            }
+                            self._attach_snapshot(obj_meta, track_snapshot)
 
-                if track_crops or track_snapshot:
-                    store_track_artifacts(
-                        source_id=str(source_id),
-                        frame_num=raw_frame_num,
-                        track_id=int(track_id),
-                        crops=track_crops,
-                        snapshot=track_snapshot,
+                    if track_crops or track_snapshot:
+                        store_track_artifacts(
+                            source_id=str(source_id),
+                            frame_num=raw_frame_num,
+                            track_id=int(track_id),
+                            crops=track_crops,
+                            snapshot=track_snapshot,
+                        )
+
+                if frame_num <= 3 or frame_num % self._debug_every == 0:
+                    logger.info(
+                        "[CropExtractor] source=%s frame=%s complete objects=%s duration_ms=%.1f",
+                        source_id,
+                        frame_num,
+                        object_count,
+                        (time.perf_counter() - started) * 1000.0,
                     )
+        except Exception:
+            logger.exception(
+                "[CropExtractor] source=%s frame=%s failed; continuing pipeline",
+                source_id,
+                frame_num,
+            )
 
     def _encode_crop(self, img: np.ndarray, target_size: tuple | None = None) -> str:
         if target_size:
@@ -182,9 +217,10 @@ class CropExtractor(NvDsPyFuncPlugin):
         """Lazily load SCRFD ONNX model via onnxruntime."""
         if self._scrfd_session is not None:
             return True
+        if self._scrfd_disabled_reason is not None:
+            return False
         try:
             import onnxruntime as ort
-            import os
 
             model_path = os.environ.get(
                 "SCRFD_ONNX_PATH",
@@ -192,13 +228,27 @@ class CropExtractor(NvDsPyFuncPlugin):
             )
             if not os.path.exists(model_path):
                 logger.warning("SCRFD ONNX model not found at %s", model_path)
+                self._scrfd_disabled_reason = f"missing:{model_path}"
+                self.use_scrfd = False
                 return False
-            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-            self._scrfd_session = ort.InferenceSession(model_path, providers=providers)
-            logger.info("SCRFD model loaded from %s", model_path)
+            prefer_cuda = os.environ.get("SCRFD_USE_GPU", "false").strip().lower() in {"1", "true", "yes"}
+            providers = ["CPUExecutionProvider"]
+            if prefer_cuda:
+                providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            session_options = ort.SessionOptions()
+            session_options.intra_op_num_threads = 1
+            session_options.inter_op_num_threads = 1
+            self._scrfd_session = ort.InferenceSession(
+                model_path,
+                sess_options=session_options,
+                providers=providers,
+            )
+            logger.info("SCRFD model loaded from %s providers=%s", model_path, providers)
             return True
         except Exception as e:
             logger.warning("Failed to load SCRFD model: %s", e)
+            self._scrfd_disabled_reason = str(e)
+            self.use_scrfd = False
             return False
 
     @staticmethod
@@ -280,14 +330,27 @@ class CropExtractor(NvDsPyFuncPlugin):
 
         det_size = 640
         resized = cv2.resize(person_crop, (det_size, det_size))
-        inp_np = resized.astype(np.float32).transpose(2, 0, 1)[np.newaxis]
+        # SCRFD expects BGR images normalized to (img - 127.5) / 128.0
+        normalized = (resized.astype(np.float32) - 127.5) / 128.0
+        inp_np = normalized.transpose(2, 0, 1)[np.newaxis]
 
         try:
             input_name = self._scrfd_session.get_inputs()[0].name
+            started = time.perf_counter()
             outputs = self._scrfd_session.run(None, {input_name: inp_np})
-            scores, bboxes, keypoints = self._decode_scrfd_outputs(outputs, det_size=det_size, score_thresh=0.5)
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            if elapsed_ms > 500:
+                logger.warning("SCRFD inference slow: %.1f ms", elapsed_ms)
+            # Lower the confidence threshold for debugging; SCRFD default is 0.5 but we want to see any detections
+            scores, bboxes, keypoints = self._decode_scrfd_outputs(outputs, det_size=det_size, score_thresh=0.2)
+            self._scrfd_failures = 0
         except Exception as e:
+            self._scrfd_failures += 1
             logger.warning("SCRFD inference failed: %s", e)
+            if self._scrfd_failures >= 3:
+                self._scrfd_disabled_reason = f"runtime_failures:{self._scrfd_failures}"
+                self.use_scrfd = False
+                logger.warning("SCRFD disabled after repeated inference failures")
             return None
 
         if len(scores) == 0:

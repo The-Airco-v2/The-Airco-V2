@@ -1,0 +1,28 @@
+name: "phone_detection"
+platform: "tensorrt_plan"
+max_batch_size: 1
+
+input [
+  {
+    name: "images"
+    data_type: TYPE_FP32
+    format: FORMAT_NCHW
+    dims: [ 3, 640, 640 ]
+  }
+]
+
+output [
+  {
+    name: "output0"
+    data_type: TYPE_FP32
+    dims: [ 5, 8400 ]
+  }
+]
+
+instance_group [
+  {
+    kind: KIND_GPU
+    gpus: [ 0 ]
+    count: 1
+  }
+]

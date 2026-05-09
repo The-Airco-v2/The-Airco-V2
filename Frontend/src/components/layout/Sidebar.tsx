@@ -1,4 +1,4 @@
-import { Bell, Camera, FileBarChart2, GitMerge, LayoutDashboard, LogOut, MonitorPlay, PlayCircle, Shield, Users } from "lucide-react";
+import { Bell, Camera, FileBarChart2, GitMerge, LayoutDashboard, LogOut, PlayCircle, Users } from "lucide-react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth";
@@ -6,8 +6,7 @@ import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
   { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
-  { to: "/cameras", icon: Camera, label: "Cameras" },
-  { to: "/live", icon: MonitorPlay, label: "Live View" },
+  { to: "/cameras", icon: Camera, label: "Camera Manager" },
   { to: "/reports", icon: FileBarChart2, label: "Reports" },
   { to: "/identity-review", icon: GitMerge, label: "Identity Review" },
   { to: "/employees", icon: Users, label: "Employees" },
@@ -28,8 +27,8 @@ export function Sidebar() {
   return (
     <aside className="fixed inset-y-0 left-0 z-40 flex w-60 flex-col border-r border-zinc-800 bg-zinc-900">
       <div className="flex h-14 items-center gap-2.5 border-b border-zinc-800 px-5">
-        <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-sky-500">
-          <Shield className="h-4 w-4 text-white" />
+        <div className="flex h-7 w-7 items-center justify-center overflow-hidden rounded-lg bg-zinc-950 ring-1 ring-zinc-700/80">
+          <img src="/logo.png" alt="Airco Secure" className="h-full w-full object-contain p-0.5" />
         </div>
         <span className="text-sm font-semibold tracking-tight text-zinc-50">Airco Secure</span>
       </div>
