@@ -17,7 +17,7 @@ export class ApiError extends Error {
  * - In dev, VITE_API_URL is unset and the Vite proxy in vite.config.ts
  *   maps /api/... → http://localhost:8000.
  * - In production builds (Cloudflare Pages), VITE_API_URL is set to
- *   the deployed API origin (e.g. https://api.the-airco.com) so the
+ *   the deployed API origin (e.g. https://api.the-airco.net) so the
  *   browser hits it directly cross-origin.
  *
  * Absolute URLs (http://, https://, ws://, wss://) pass through.

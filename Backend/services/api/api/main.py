@@ -40,7 +40,6 @@ def _cors_origins() -> list[str]:
         "http://localhost:3000",
         "http://localhost:5173",
         "https://the-airco.net",
-        "https://app.the-airco.com",
         "https://app.the-airco.net",
     ]
     extra = os.getenv("CORS_EXTRA_ORIGINS", "")

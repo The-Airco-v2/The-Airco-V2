@@ -110,9 +110,9 @@ def decode_session_cookie(cookie_value: str | None) -> dict[str, Any] | None:
 def _cookie_domain() -> str | None:
     """Return the configured cookie domain or None for host-only cookies.
 
-    A configured domain like ``.the-airco.com`` lets the cookie be
-    read by both the API host (api.the-airco.com) and the frontend
-    host (app.the-airco.com). In single-origin dev we leave it unset.
+    A configured domain like ``.the-airco.net`` lets the cookie be
+    read by both the API host (api.the-airco.net) and the frontend
+    host (app.the-airco.net). In single-origin dev we leave it unset.
     """
     domain = (settings.session_cookie_domain or "").strip()
     return domain or None

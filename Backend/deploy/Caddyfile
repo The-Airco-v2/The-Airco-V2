@@ -8,14 +8,14 @@
 
 {
     # Logging to stdout; Caddy already does sane defaults.
-    email {$ACME_EMAIL:info@the-airco.com}
+    email {$ACME_EMAIL:info@the-airco.net}
 }
 
-{$API_HOST:api.the-airco.com} {
+{$API_HOST:api.the-airco.net} {
     encode zstd gzip
 
     # Centrifugo WebSocket + API. The frontend connects to
-    # wss://api.the-airco.com/centrifugo/connection/websocket which
+    # wss://api.the-airco.net/centrifugo/connection/websocket which
     # gets stripped to /connection/websocket for Centrifugo.
     handle_path /centrifugo/* {
         reverse_proxy centrifugo:8088
@@ -34,7 +34,7 @@
     }
 }
 
-{$MEDIA_HOST:media.the-airco.com} {
+{$MEDIA_HOST:media.the-airco.net} {
     encode zstd gzip
 
     # go2rtc HTTP / WebRTC signalling / stream.html. Caddy upgrades

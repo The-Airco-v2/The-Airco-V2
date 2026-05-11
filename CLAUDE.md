@@ -177,17 +177,17 @@ GPU model artifacts are baked into the images:
 ### Reverse proxy + TLS
 
 `deploy/Caddyfile` + `docker-compose.proxy.yml` add Caddy as a TLS terminator on the Hetzner host. Routes:
-- `api.the-airco.com/*` → `api:8000`
-- `api.the-airco.com/centrifugo/*` → `centrifugo:8088` (WebSocket)
-- `api.the-airco.com/minio/*` → `minio:9000`
-- `media.the-airco.com/*` → `go2rtc:1984`
+- `api.the-airco.net/*` → `api:8000`
+- `api.the-airco.net/centrifugo/*` → `centrifugo:8088` (WebSocket)
+- `api.the-airco.net/minio/*` → `minio:9000`
+- `media.the-airco.net/*` → `go2rtc:1984`
 
 Caddy auto-renews via Let's Encrypt. DNS must point at the Hetzner public IP before TLS issuance can succeed.
 
 ### Cross-domain auth
 
-Because the frontend lives on `app.the-airco.com` (Cloudflare) and the API on `api.the-airco.com` (Hetzner), the session cookie must be parent-domain-scoped. Set:
-- `SESSION_COOKIE_DOMAIN=.the-airco.com`
+Because the frontend lives on `app.the-airco.net` (Cloudflare) and the API on `api.the-airco.net` (Hetzner), the session cookie must be parent-domain-scoped. Set:
+- `SESSION_COOKIE_DOMAIN=.the-airco.net`
 - `SESSION_SECURE_COOKIE=true`
 - `SESSION_SAME_SITE=none`
 

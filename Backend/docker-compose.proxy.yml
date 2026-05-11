@@ -22,9 +22,9 @@ services:
       - "443:443"
       - "443:443/udp"
     environment:
-      ACME_EMAIL: ${ACME_EMAIL:-info@the-airco.com}
-      API_HOST: ${API_HOST:-api.the-airco.com}
-      MEDIA_HOST: ${MEDIA_HOST:-media.the-airco.com}
+      ACME_EMAIL: ${ACME_EMAIL:-info@the-airco.net}
+      API_HOST: ${API_HOST:-api.the-airco.net}
+      MEDIA_HOST: ${MEDIA_HOST:-media.the-airco.net}
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

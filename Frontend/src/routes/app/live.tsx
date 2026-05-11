@@ -10,7 +10,7 @@ import type { Camera } from "@/types";
 
 // go2rtc proxied at /webrtc/ in dev (Vite proxy → :1984). In
 // production builds VITE_GO2RTC_URL points at the deployed go2rtc
-// host (e.g. https://media.the-airco.com) and the path is used
+// host (e.g. https://media.the-airco.net) and the path is used
 // directly. stream.html handles WebRTC → MSE → HLS → MJPEG fallback.
 const GO2RTC_BASE =
   ((import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env
