@@ -163,7 +163,7 @@ The Hostinger CPU host and RunPod pod talk via Tailscale (free tier). The Hostin
 
 ### Image registry
 
-All service images live in `ghcr.io/dscyrus07-dev/airco-*`. `.github/workflows/build-images.yml` builds and pushes on every push to `main` or `deploy/**`. Tags: `:sha-<short>` (always) and `:latest` (on main/deploy branches).
+All service images live in `ghcr.io/the-airco-v2/airco-*`. `.github/workflows/build-images.yml` builds and pushes on every push to `main` or `deploy/**`. Tags: `:sha-<short>` (always) and `:latest` (on main/deploy branches).
 
 GPU model artifacts are baked into the images:
 - `airco-triton` includes ONNX + any pre-built `.plan` engines. TRT engines rebuild per-GPU on first start and persist on RunPod's container filesystem across stop/start.

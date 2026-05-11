@@ -11,7 +11,7 @@
 #                pod stop/start so first-frame latency stays low.
 #
 # Required env (set on the RunPod template):
-#   IMAGE_REGISTRY              e.g. ghcr.io/dscyrus07-dev
+#   IMAGE_REGISTRY              e.g. ghcr.io/the-airco-v2
 #   IMAGE_TAG                   e.g. latest or a SHA
 #   AIRCO_HUB_HOST              Tailscale MagicDNS name of the Hostinger box
 #                               (e.g. airco-hub.taila1234.ts.net)
@@ -48,7 +48,7 @@ x-shared-env: &shared-env
 
 services:
   triton:
-    image: ${IMAGE_REGISTRY:-ghcr.io/dscyrus07-dev}/airco-triton:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-ghcr.io/the-airco-v2}/airco-triton:${IMAGE_TAG:-latest}
     restart: unless-stopped
     pull_policy: always
     ports:
@@ -69,7 +69,7 @@ services:
       start_period: 600s
 
   savant-pipeline:
-    image: ${IMAGE_REGISTRY:-ghcr.io/dscyrus07-dev}/airco-savant-pipeline:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-ghcr.io/the-airco-v2}/airco-savant-pipeline:${IMAGE_TAG:-latest}
     restart: unless-stopped
     pull_policy: always
     environment:
@@ -91,7 +91,7 @@ services:
         condition: service_healthy
 
   savant-feeder:
-    image: ${IMAGE_REGISTRY:-ghcr.io/dscyrus07-dev}/airco-savant-feeder:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-ghcr.io/the-airco-v2}/airco-savant-feeder:${IMAGE_TAG:-latest}
     restart: unless-stopped
     pull_policy: always
     environment:
@@ -103,7 +103,7 @@ services:
       - savant-pipeline
 
   session-control:
-    image: ${IMAGE_REGISTRY:-ghcr.io/dscyrus07-dev}/airco-session-control:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-ghcr.io/the-airco-v2}/airco-session-control:${IMAGE_TAG:-latest}
     restart: unless-stopped
     pull_policy: always
     environment:
@@ -117,7 +117,7 @@ services:
       start_period: 60s
 
   identity-consumer:
-    image: ${IMAGE_REGISTRY:-ghcr.io/dscyrus07-dev}/airco-identity-consumer:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-ghcr.io/the-airco-v2}/airco-identity-consumer:${IMAGE_TAG:-latest}
     restart: unless-stopped
     pull_policy: always
     environment:
@@ -127,28 +127,28 @@ services:
         condition: service_healthy
 
   analytics-consumer:
-    image: ${IMAGE_REGISTRY:-ghcr.io/dscyrus07-dev}/airco-analytics-consumer:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-ghcr.io/the-airco-v2}/airco-analytics-consumer:${IMAGE_TAG:-latest}
     restart: unless-stopped
     pull_policy: always
     environment:
       <<: *shared-env
 
   snapshot-consumer:
-    image: ${IMAGE_REGISTRY:-ghcr.io/dscyrus07-dev}/airco-snapshot-consumer:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-ghcr.io/the-airco-v2}/airco-snapshot-consumer:${IMAGE_TAG:-latest}
     restart: unless-stopped
     pull_policy: always
     environment:
       <<: *shared-env
 
   ws-publisher:
-    image: ${IMAGE_REGISTRY:-ghcr.io/dscyrus07-dev}/airco-ws-publisher:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-ghcr.io/the-airco-v2}/airco-ws-publisher:${IMAGE_TAG:-latest}
     restart: unless-stopped
     pull_policy: always
     environment:
       <<: *shared-env
 
   ultimate-adapter:
-    image: ${IMAGE_REGISTRY:-ghcr.io/dscyrus07-dev}/airco-ultimate-adapter:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-ghcr.io/the-airco-v2}/airco-ultimate-adapter:${IMAGE_TAG:-latest}
     restart: unless-stopped
     pull_policy: always
     environment:

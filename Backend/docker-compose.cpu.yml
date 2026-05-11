@@ -143,7 +143,7 @@ services:
       MTX_PROTOCOLS: tcp
 
   api:
-    image: ${IMAGE_REGISTRY:-ghcr.io/dscyrus07-dev}/airco-api:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-ghcr.io/the-airco-v2}/airco-api:${IMAGE_TAG:-latest}
     restart: unless-stopped
     pull_policy: always
     ports:
