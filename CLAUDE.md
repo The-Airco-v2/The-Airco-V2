@@ -153,13 +153,13 @@ Realtime hooks (`useLive*`) subscribe to Centrifugo channels named per `resolve_
 
 The production stack splits across three environments:
 
-- **Hetzner Cloud Singapore (CCX13, always on)** — runs the CPU half: Postgres, Redis, MinIO, Centrifugo, FastAPI, go2rtc, mediamtx. Configured via `Backend/docker-compose.cpu.yml` + `.env.production`.
+- **Hostinger KVM 2 Singapore (always on)** — runs the CPU half: Postgres, Redis, MinIO, Centrifugo, FastAPI, go2rtc, mediamtx. Configured via `Backend/docker-compose.cpu.yml` + `.env.production`.
 - **RunPod GPU pod (Community Cloud RTX 3090, on demand)** — runs the GPU half: Triton, savant-pipeline, savant-feeder, identity-consumer, analytics-consumer, snapshot-consumer, session-control, ws-publisher, ultimate-adapter. Configured via `Backend/docker-compose.gpu.yml`. The API resumes/stops the pod on session_start/session_stop.
 - **Cloudflare Pages** — hosts the Vite-built frontend. `Frontend/.env.production.example` documents the three required `VITE_*` URLs.
 
 ### Cross-environment networking
 
-Hetzner and RunPod talk via Tailscale (free tier). The Hetzner box advertises itself on the tailnet as `airco-hub`; GPU compose reads `AIRCO_HUB_HOST` to find Postgres / Redis / MinIO / Centrifugo / go2rtc.
+The Hostinger CPU host and RunPod pod talk via Tailscale (free tier). The Hostinger box advertises itself on the tailnet as `airco-hub`; GPU compose reads `AIRCO_HUB_HOST` to find Postgres / Redis / MinIO / Centrifugo / go2rtc.
 
 ### Image registry
 
@@ -176,17 +176,17 @@ GPU model artifacts are baked into the images:
 
 ### Reverse proxy + TLS
 
-`deploy/Caddyfile` + `docker-compose.proxy.yml` add Caddy as a TLS terminator on the Hetzner host. Routes:
+`deploy/Caddyfile` + `docker-compose.proxy.yml` add Caddy as a TLS terminator on the Hostinger host. Routes:
 - `api.the-airco.net/*` → `api:8000`
 - `api.the-airco.net/centrifugo/*` → `centrifugo:8088` (WebSocket)
 - `api.the-airco.net/minio/*` → `minio:9000`
 - `media.the-airco.net/*` → `go2rtc:1984`
 
-Caddy auto-renews via Let's Encrypt. DNS must point at the Hetzner public IP before TLS issuance can succeed.
+Caddy auto-renews via Let's Encrypt. DNS must point at the Hostinger VPS public IP before TLS issuance can succeed.
 
 ### Cross-domain auth
 
-Because the frontend lives on `app.the-airco.net` (Cloudflare) and the API on `api.the-airco.net` (Hetzner), the session cookie must be parent-domain-scoped. Set:
+Because the frontend lives on `app.the-airco.net` (Cloudflare) and the API on `api.the-airco.net` (Hostinger), the session cookie must be parent-domain-scoped. Set:
 - `SESSION_COOKIE_DOMAIN=.the-airco.net`
 - `SESSION_SECURE_COOKIE=true`
 - `SESSION_SAME_SITE=none`
@@ -205,4 +205,4 @@ When connecting the repo to Cloudflare Pages:
 
 ### Production env file
 
-`Backend/.env.production.template` is the authoritative list of required vars. Always copy to `.env.production` on the Hetzner host and fill placeholders (`__SET_ME__`) before bringing up the compose stack.
+`Backend/.env.production.template` is the authoritative list of required vars. Always copy to `.env.production` on the Hostinger host and fill placeholders (`__SET_ME__`) before bringing up the compose stack.

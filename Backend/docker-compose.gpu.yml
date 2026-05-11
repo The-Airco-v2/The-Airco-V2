@@ -1,7 +1,7 @@
 # Production GPU compose — RunPod (on demand).
 #
 # Runs the analytics pipeline. All durable state lives on the CPU box
-# (Hetzner). This stack only consumes Redis Streams, writes to Postgres
+# (Hostinger). This stack only consumes Redis Streams, writes to Postgres
 # / MinIO / Centrifugo over Tailscale, and pulls RTSP from go2rtc on
 # the CPU box.
 #
@@ -13,7 +13,7 @@
 # Required env (set on the RunPod template):
 #   IMAGE_REGISTRY              e.g. ghcr.io/dscyrus07-dev
 #   IMAGE_TAG                   e.g. latest or a SHA
-#   AIRCO_HUB_HOST              Tailscale MagicDNS name of the Hetzner box
+#   AIRCO_HUB_HOST              Tailscale MagicDNS name of the Hostinger box
 #                               (e.g. airco-hub.taila1234.ts.net)
 #   POSTGRES_PASSWORD, MINIO_*, CENTRIFUGO_*, SUPABASE_*, SESSION_*,
 #   REDIS_URL (derived from AIRCO_HUB_HOST if not set)

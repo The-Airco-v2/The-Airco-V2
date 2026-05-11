@@ -1,4 +1,4 @@
-# Production CPU compose — Hetzner Singapore (always on).
+# Production CPU compose — Hostinger Singapore (always on).
 #
 # Runs the durable-state services: Postgres, Redis, MinIO, Centrifugo,
 # the FastAPI API, plus RTSP relays (go2rtc, mediamtx). GPU services
