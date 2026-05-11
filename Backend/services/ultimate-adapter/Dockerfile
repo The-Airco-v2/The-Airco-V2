@@ -29,5 +29,16 @@ RUN pip install -e /app/shared
 
 COPY services/ultimate-adapter/ultimate_adapter /app/ultimate_adapter
 
+# Bake Ultimate-Tracker model weights into the image. The CI workflow
+# copies the sibling Ultimate-Tracker/ directory to
+# services/ultimate-adapter/vendor/ultimate-poc/ before building, so
+# the build context (Backend/) sees it at a stable path. Use the
+# ULTIMATE_DET_MODEL_PATH / ULTIMATE_REID_MODEL_PATH env vars at
+# runtime to point at these.
+COPY services/ultimate-adapter/vendor/ultimate-poc/ /ultimate-poc/
+
 ENV PYTHONPATH=/app
+ENV ULTIMATE_DET_MODEL_PATH=/ultimate-poc/yolo11s.pt
+ENV ULTIMATE_REID_MODEL_PATH=/ultimate-poc/osnet_x1_0_msmt17.pth
+
 CMD ["python", "-m", "ultimate_adapter.main"]
