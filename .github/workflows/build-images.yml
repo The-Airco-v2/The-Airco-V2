@@ -60,6 +60,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Free disk space
+        # GitHub-hosted runners ship with ~14 GB free, which isn't
+        # enough for the savant-deepstream base (~6 GB) plus build
+        # layers. Pruning preinstalled .NET / Android / CodeQL /
+        # Java toolchains frees ~25 GB.
+        run: |
+          set -eux
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo rm -rf /opt/hostedtoolcache/Java_* || true
+          sudo rm -rf /usr/local/share/boost || true
+          sudo rm -rf "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" || true
+          sudo docker image prune --all --force || true
+          df -h
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -100,6 +117,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Free disk space
+        run: |
+          set -eux
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo rm -rf /opt/hostedtoolcache/Java_* || true
+          sudo rm -rf /usr/local/share/boost || true
+          sudo rm -rf "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" || true
+          sudo docker image prune --all --force || true
+          df -h
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -138,6 +168,19 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          set -eux
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo rm -rf /opt/hostedtoolcache/Java_* || true
+          sudo rm -rf /usr/local/share/boost || true
+          sudo rm -rf "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" || true
+          sudo docker image prune --all --force || true
+          df -h
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -185,6 +228,19 @@ jobs:
           # path; we still need them on disk for the build. They're
           # part of this repo (Ultimate-Tracker/ committed at root).
           fetch-depth: 1
+
+      - name: Free disk space
+        run: |
+          set -eux
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo rm -rf /opt/hostedtoolcache/Java_* || true
+          sudo rm -rf /usr/local/share/boost || true
+          sudo rm -rf "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" || true
+          sudo docker image prune --all --force || true
+          df -h
 
       - name: Vendor Ultimate-Tracker weights
         run: |
