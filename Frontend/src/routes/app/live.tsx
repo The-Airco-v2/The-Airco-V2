@@ -8,9 +8,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useCameras } from "@/hooks/useCameras";
 import type { Camera } from "@/types";
 
-// go2rtc proxied at /webrtc/ in both dev (Vite proxy) and prod (nginx).
-// stream.html handles WebRTC → MSE → HLS → MJPEG fallback internally.
-const GO2RTC_BASE = "/webrtc";
+// go2rtc proxied at /webrtc/ in dev (Vite proxy → :1984). In
+// production builds VITE_GO2RTC_URL points at the deployed go2rtc
+// host (e.g. https://media.the-airco.net) and the path is used
+// directly. stream.html handles WebRTC → MSE → HLS → MJPEG fallback.
+const GO2RTC_BASE =
+  ((import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env
+    ?.VITE_GO2RTC_URL?.replace(/\/$/, "")) || "/webrtc";
 
 function playerUrl(streamName: string): string {
   return `${GO2RTC_BASE}/stream.html?src=${encodeURIComponent(streamName)}`;

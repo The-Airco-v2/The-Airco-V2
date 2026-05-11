@@ -1,0 +1,40 @@
+# Caddy reverse proxy add-on for the Hetzner CPU stack.
+#
+# Compose chains with docker-compose.cpu.yml so they share the same
+# default network (auto-named "<project>_default"). Bring up together:
+#
+#   docker compose \
+#     -f docker-compose.cpu.yml \
+#     -f docker-compose.proxy.yml \
+#     --env-file .env.production \
+#     up -d
+#
+# Caddy issues / renews TLS certs automatically via Let's Encrypt on
+# first request to the configured hostnames; DNS must resolve them
+# to this host's public IP first.
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      ACME_EMAIL: ${ACME_EMAIL:-info@the-airco.net}
+      API_HOST: ${API_HOST:-api.the-airco.net}
+      MEDIA_HOST: ${MEDIA_HOST:-media.the-airco.net}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - centrifugo
+      - go2rtc
+      - minio
+
+volumes:
+  caddy_data:
+  caddy_config:

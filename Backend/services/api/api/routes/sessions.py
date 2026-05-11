@@ -2,21 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from airco.db import get_session
+from airco import redis_streams  # late lookup keeps test patches simple
+from airco.db import async_session, get_session
 from airco.redis_streams import get_redis
 from airco.models import Session, SessionCamera, Camera
 from api.auth import AuthState, require_authenticated, require_admin
+from api.gpu_controller import get_gpu_controller
+from api.runpod_client import RunPodError
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 REID_PROFILE_STANDARD = "standard"
@@ -182,10 +189,23 @@ async def get_session_detail(
 @router.post("/{session_id}/start")
 async def start_session(
     session_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
     body: SessionStartRequest | None = None,
     auth: AuthState = Depends(require_admin),
     db: AsyncSession = Depends(get_session),
 ):
+    """Begin a session. Booting the GPU pod (when one is configured)
+    can take 30-60s, so we transition the session to ``starting``
+    immediately and finish the work — pod resume, health check,
+    publishing ``session_start`` to ``airco:control`` — in a background
+    task. The frontend polls / subscribes for status to flip to
+    ``running``.
+
+    Returns 202 Accepted on dispatch. The caller should treat a non-
+    2xx response from this endpoint as a hard failure (e.g. session
+    not found); GPU boot failures surface later as ``status="failed"``
+    on the session record.
+    """
     result = await db.execute(
         select(Session).where(
             Session.id == session_id,
@@ -197,14 +217,6 @@ async def start_session(
         raise HTTPException(404, "Session not found")
 
     reid_profile = body.reid_profile if body is not None else REID_PROFILE_STANDARD
-    session.status = "running"
-    session.started_at = datetime.now(timezone.utc)
-    config = dict(session.config or {})
-    config["reid_profile"] = reid_profile
-    session.config = config
-    await db.commit()
-
-    from airco.redis_streams import publish_event
     cams_result = await db.execute(
         select(SessionCamera, Camera).join(Camera, SessionCamera.camera_id == Camera.id)
         .where(
@@ -216,13 +228,94 @@ async def start_session(
         {"camera_id": str(sc.camera_id), "rtsp_url": cam.rtsp_url, "name": cam.name}
         for sc, cam in cams_result
     ]
-    await publish_event("airco:control", {
+
+    controller = get_gpu_controller()
+    session.status = "starting" if controller.enabled else "running"
+    session.started_at = datetime.now(timezone.utc)
+    config = dict(session.config or {})
+    config["reid_profile"] = reid_profile
+    session.config = config
+    await db.commit()
+
+    if controller.enabled:
+        background_tasks.add_task(
+            _finish_session_start,
+            session_id,
+            reid_profile,
+            cameras_payload,
+        )
+        return JSONResponse(
+            status_code=202,
+            content={"status": "starting", "reid_profile": reid_profile},
+        )
+
+    await redis_streams.publish_event("airco:control", {
         "event_type": "session_start",
         "session_id": str(session_id),
         "reid_profile": reid_profile,
         "cameras": json.dumps(cameras_payload),
     })
     return {"status": "running", "reid_profile": reid_profile}
+
+
+async def _finish_session_start(
+    session_id: uuid.UUID,
+    reid_profile: str,
+    cameras_payload: list[dict[str, str]],
+) -> None:
+    """Background-task continuation of start_session.
+
+    Boots the GPU pod, waits for health, then publishes the
+    ``session_start`` control event and flips the session status to
+    ``running``. On any failure the session is marked ``failed`` with
+    a short error message stored on ``config.start_error``.
+    """
+    controller = get_gpu_controller()
+    try:
+        await controller.ensure_running()
+        await redis_streams.publish_event("airco:control", {
+            "event_type": "session_start",
+            "session_id": str(session_id),
+            "reid_profile": reid_profile,
+            "cameras": json.dumps(cameras_payload),
+        })
+        async with async_session() as db:
+            await _mark_session_running(db, session_id)
+    except (RunPodError, asyncio.CancelledError, Exception) as exc:
+        logger.exception("Failed to start session %s", session_id)
+        try:
+            async with async_session() as db:
+                await _mark_session_failed(db, session_id, str(exc))
+        except Exception:
+            logger.exception("Failed to record session-start failure for %s", session_id)
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+
+
+async def _mark_session_running(db: AsyncSession, session_id: uuid.UUID) -> None:
+    await db.execute(
+        update(Session)
+        .where(Session.id == session_id)
+        .values(status="running")
+    )
+    await db.commit()
+
+
+async def _mark_session_failed(
+    db: AsyncSession,
+    session_id: uuid.UUID,
+    error_message: str,
+) -> None:
+    row = await db.execute(select(Session).where(Session.id == session_id))
+    session = row.scalar_one_or_none()
+    if session is None:
+        return
+    config = dict(session.config or {})
+    config["start_error"] = error_message[:500]
+    session.status = "failed"
+    session.config = config
+    session.stopped_at = datetime.now(timezone.utc)
+    await db.commit()
 
 
 @router.post("/{session_id}/stop")
@@ -240,8 +333,7 @@ async def stop_session(
         )
     )
     await db.commit()
-    from airco.redis_streams import publish_event
-    await publish_event("airco:control", {
+    await redis_streams.publish_event("airco:control", {
         "event_type": "session_stop",
         "session_id": str(session_id),
     })
@@ -260,8 +352,7 @@ async def pause_session(
         .values(status="paused")
     )
     await db.commit()
-    from airco.redis_streams import publish_event
-    await publish_event("airco:control", {
+    await redis_streams.publish_event("airco:control", {
         "event_type": "session_pause",
         "session_id": str(session_id),
     })

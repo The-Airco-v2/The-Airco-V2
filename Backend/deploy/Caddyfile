@@ -1,0 +1,43 @@
+# Caddy reverse proxy for the Hetzner CPU stack.
+#
+# Terminates TLS via Let's Encrypt (HTTP-01 / TLS-ALPN-01) and routes
+# to the internal services on the same docker network.
+#
+# Override ${API_HOST} / ${MEDIA_HOST} via environment variables on
+# the Caddy container if you deploy under different hostnames.
+
+{
+    # Logging to stdout; Caddy already does sane defaults.
+    email {$ACME_EMAIL:info@the-airco.net}
+}
+
+{$API_HOST:api.the-airco.net} {
+    encode zstd gzip
+
+    # Centrifugo WebSocket + API. The frontend connects to
+    # wss://api.the-airco.net/centrifugo/connection/websocket which
+    # gets stripped to /connection/websocket for Centrifugo.
+    handle_path /centrifugo/* {
+        reverse_proxy centrifugo:8088
+    }
+
+    # MinIO presigned URLs and admin console (optional, see
+    # PUBLIC_MINIO_URL in .env.production). Strips /minio/ prefix.
+    handle_path /minio/* {
+        reverse_proxy minio:9000
+    }
+
+    # Everything else (FastAPI: /api/v2/*, /api/auth/*, /health) goes
+    # to the api service.
+    handle {
+        reverse_proxy api:8000
+    }
+}
+
+{$MEDIA_HOST:media.the-airco.net} {
+    encode zstd gzip
+
+    # go2rtc HTTP / WebRTC signalling / stream.html. Caddy upgrades
+    # WebSockets automatically based on request headers.
+    reverse_proxy go2rtc:1984
+}

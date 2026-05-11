@@ -11,9 +11,31 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Resolve the absolute URL for an API request.
+ *
+ * - In dev, VITE_API_URL is unset and the Vite proxy in vite.config.ts
+ *   maps /api/... → http://localhost:8000.
+ * - In production builds (Cloudflare Pages), VITE_API_URL is set to
+ *   the deployed API origin (e.g. https://api.the-airco.net) so the
+ *   browser hits it directly cross-origin.
+ *
+ * Absolute URLs (http://, https://, ws://, wss://) pass through.
+ */
+export function resolveApiUrl(path: string): string {
+  if (/^[a-z]+:\/\//i.test(path)) return path;
+  const base = (import.meta as ImportMeta & {
+    env?: Record<string, string | undefined>;
+  }).env?.VITE_API_URL;
+  if (typeof base !== "string" || base.length === 0) return path;
+  const trimmedBase = base.replace(/\/$/, "");
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return `${trimmedBase}${normalizedPath}`;
+}
+
 export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   const hasBody = init?.body != null;
-  const res = await fetch(path, {
+  const res = await fetch(resolveApiUrl(path), {
     ...init,
     credentials: "include",
     headers: {

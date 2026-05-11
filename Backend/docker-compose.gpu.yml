@@ -1,0 +1,169 @@
+# Production GPU compose — RunPod (on demand).
+#
+# Runs the analytics pipeline. All durable state lives on the CPU box
+# (Hetzner). This stack only consumes Redis Streams, writes to Postgres
+# / MinIO / Centrifugo over Tailscale, and pulls RTSP from go2rtc on
+# the CPU box.
+#
+# Pulled images: ghcr.io/${IMAGE_REGISTRY_OWNER}/airco-*:${IMAGE_TAG}
+# Volume mount:  /data on RunPod's persistent volume — used to cache
+#                Triton TRT engines and Savant DeepStream caches across
+#                pod stop/start so first-frame latency stays low.
+#
+# Required env (set on the RunPod template):
+#   IMAGE_REGISTRY              e.g. ghcr.io/dscyrus07-dev
+#   IMAGE_TAG                   e.g. latest or a SHA
+#   AIRCO_HUB_HOST              Tailscale MagicDNS name of the Hetzner box
+#                               (e.g. airco-hub.taila1234.ts.net)
+#   POSTGRES_PASSWORD, MINIO_*, CENTRIFUGO_*, SUPABASE_*, SESSION_*,
+#   REDIS_URL (derived from AIRCO_HUB_HOST if not set)
+#
+# Usage on the pod:
+#   docker compose -f docker-compose.gpu.yml pull
+#   docker compose -f docker-compose.gpu.yml up -d
+
+x-shared-env: &shared-env
+  POSTGRES_HOST: ${AIRCO_HUB_HOST:?AIRCO_HUB_HOST must be set}
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: airco
+  POSTGRES_USER: airco
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+  REDIS_URL: ${REDIS_URL:-redis://${AIRCO_HUB_HOST}:6379/0}
+  MINIO_ENDPOINT: ${AIRCO_HUB_HOST}:9000
+  MINIO_PUBLIC_URL: ${PUBLIC_MINIO_URL:?PUBLIC_MINIO_URL must be set}
+  MINIO_PUBLIC_PRESIGN: ${MINIO_PUBLIC_PRESIGN:-true}
+  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY must be set}
+  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY must be set}
+  MINIO_BUCKET: ${MINIO_BUCKET:-airco-evidence}
+  CENTRIFUGO_API_URL: http://${AIRCO_HUB_HOST}:8088/api
+  CENTRIFUGO_API_KEY: ${CENTRIFUGO_API_KEY:?CENTRIFUGO_API_KEY must be set}
+  CENTRIFUGO_TOKEN_SECRET: ${CENTRIFUGO_TOKEN_SECRET:?CENTRIFUGO_TOKEN_SECRET must be set}
+  TRITON_URL: triton:8001
+  TENANT_ID: ${TENANT_ID:-default}
+  SUPABASE_URL: ${SUPABASE_URL:?}
+  SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:?}
+  SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:?}
+  SESSION_SECRET: ${SESSION_SECRET:?}
+  SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-airco_session}
+
+services:
+  triton:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dscyrus07-dev}/airco-triton:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    pull_policy: always
+    ports:
+      - "127.0.0.1:8001:8001"
+      - "127.0.0.1:8002:8002"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/v2/health/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 30
+      start_period: 600s
+
+  savant-pipeline:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dscyrus07-dev}/airco-savant-pipeline:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    pull_policy: always
+    environment:
+      <<: *shared-env
+      ZMQ_SRC_ENDPOINT: router+bind:tcp://0.0.0.0:5000
+      ZMQ_SINK_ENDPOINT: ""
+      USE_SCRFD: ${USE_SCRFD:-true}
+      SCRFD_ONNX_PATH: /models/scrfd/det_10g.onnx
+      TRITON_URL: triton:8001
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      triton:
+        condition: service_healthy
+
+  savant-feeder:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dscyrus07-dev}/airco-savant-feeder:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    pull_policy: always
+    environment:
+      <<: *shared-env
+      GO2RTC_RTSP_BASE_URL: rtsp://${AIRCO_HUB_HOST}:8554
+      ZMQ_SRC_ENDPOINT: dealer+connect:tcp://savant-pipeline:5000
+      FEEDER_FPS: ${FEEDER_FPS:-4}
+    depends_on:
+      - savant-pipeline
+
+  session-control:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dscyrus07-dev}/airco-session-control:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    pull_policy: always
+    environment:
+      <<: *shared-env
+      GO2RTC_URL: http://${AIRCO_HUB_HOST}:1984
+    healthcheck:
+      test: ["CMD", "python", "-c", "from pathlib import Path; raise SystemExit(0 if Path('/tmp/session-control-ready').exists() else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 60s
+
+  identity-consumer:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dscyrus07-dev}/airco-identity-consumer:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    pull_policy: always
+    environment:
+      <<: *shared-env
+    depends_on:
+      triton:
+        condition: service_healthy
+
+  analytics-consumer:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dscyrus07-dev}/airco-analytics-consumer:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    pull_policy: always
+    environment:
+      <<: *shared-env
+
+  snapshot-consumer:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dscyrus07-dev}/airco-snapshot-consumer:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    pull_policy: always
+    environment:
+      <<: *shared-env
+
+  ws-publisher:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dscyrus07-dev}/airco-ws-publisher:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    pull_policy: always
+    environment:
+      <<: *shared-env
+
+  ultimate-adapter:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dscyrus07-dev}/airco-ultimate-adapter:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    pull_policy: always
+    environment:
+      <<: *shared-env
+      GO2RTC_RTSP_BASE_URL: rtsp://${AIRCO_HUB_HOST}:8554
+      ULTIMATE_DET_MODEL_PATH: /ultimate-poc/yolo11s.pt
+      ULTIMATE_REID_MODEL_PATH: /ultimate-poc/osnet_x1_0_msmt17.pth
+      ULTIMATE_DEVICE: ${ULTIMATE_DEVICE:-cuda:0}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      session-control:
+        condition: service_healthy

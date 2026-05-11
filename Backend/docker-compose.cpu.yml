@@ -1,0 +1,174 @@
+# Production CPU compose — Hetzner Singapore (always on).
+#
+# Runs the durable-state services: Postgres, Redis, MinIO, Centrifugo,
+# the FastAPI API, plus RTSP relays (go2rtc, mediamtx). GPU services
+# live on a separate RunPod pod and connect back here over Tailscale.
+#
+# Usage:
+#   docker compose -f docker-compose.cpu.yml --env-file .env.production pull
+#   docker compose -f docker-compose.cpu.yml --env-file .env.production up -d
+#   docker compose -f docker-compose.cpu.yml --env-file .env.production exec api alembic upgrade head
+#
+# Bind addresses:
+#   - DB / Redis / MinIO bind to ${INTERNAL_BIND_IP:-127.0.0.1} only.
+#     Set this to the Tailscale IP so the GPU pod can reach them.
+#   - api / centrifugo / go2rtc / mediamtx bind to 0.0.0.0 so Caddy
+#     (or a public LB) can reverse-proxy them.
+
+x-shared-env: &shared-env
+  POSTGRES_HOST: timescaledb
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: airco
+  POSTGRES_USER: airco
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+  REDIS_URL: redis://redis:6379/0
+  MINIO_ENDPOINT: minio:9000
+  MINIO_PUBLIC_URL: ${PUBLIC_MINIO_URL:?PUBLIC_MINIO_URL must be set}
+  MINIO_PUBLIC_PRESIGN: ${MINIO_PUBLIC_PRESIGN:-true}
+  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY must be set}
+  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY must be set}
+  MINIO_BUCKET: ${MINIO_BUCKET:-airco-evidence}
+  CENTRIFUGO_API_URL: http://centrifugo:8088/api
+  CENTRIFUGO_API_KEY: ${CENTRIFUGO_API_KEY:?CENTRIFUGO_API_KEY must be set}
+  CENTRIFUGO_TOKEN_SECRET: ${CENTRIFUGO_TOKEN_SECRET:?CENTRIFUGO_TOKEN_SECRET must be set}
+  TENANT_ID: ${TENANT_ID:-default}
+  SUPABASE_URL: ${SUPABASE_URL:?SUPABASE_URL must be set}
+  SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:?SUPABASE_ANON_KEY must be set}
+  SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:?SUPABASE_SERVICE_ROLE_KEY must be set}
+  SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET must be set}
+  SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-airco_session}
+  SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-604800}
+  SESSION_SECURE_COOKIE: ${SESSION_SECURE_COOKIE:-true}
+  SESSION_SAME_SITE: ${SESSION_SAME_SITE:-none}
+  SESSION_COOKIE_DOMAIN: ${SESSION_COOKIE_DOMAIN:-}
+
+services:
+  timescaledb:
+    image: timescale/timescaledb-ha:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: airco
+      POSTGRES_USER: airco
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+    ports:
+      - "${INTERNAL_BIND_IP:-127.0.0.1}:5432:5432"
+    volumes:
+      - timescaledb_data:/home/postgres/pgdata/data
+      - ./config/timescaledb/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airco"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "${INTERNAL_BIND_IP:-127.0.0.1}:6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy noeviction
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    ports:
+      - "${INTERNAL_BIND_IP:-127.0.0.1}:9000:9000"
+      - "${INTERNAL_BIND_IP:-127.0.0.1}:9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY must be set}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY must be set}
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?}
+      MINIO_BUCKET: ${MINIO_BUCKET:-airco-evidence}
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $$MINIO_ACCESS_KEY $$MINIO_SECRET_KEY &&
+      mc mb --ignore-existing local/$$MINIO_BUCKET &&
+      mc anonymous set download local/$$MINIO_BUCKET &&
+      echo 'MinIO bucket ready'
+      "
+    restart: "no"
+
+  centrifugo:
+    image: centrifugo/centrifugo:v5
+    restart: unless-stopped
+    ports:
+      - "${CENTRIFUGO_BIND_IP:-0.0.0.0}:8088:8088"
+    volumes:
+      - ./config/centrifugo.json:/centrifugo/config.json
+    command: centrifugo -c config.json --port 8088
+    environment:
+      CENTRIFUGO_API_KEY: ${CENTRIFUGO_API_KEY:?}
+      CENTRIFUGO_TOKEN_HMAC_SECRET_KEY: ${CENTRIFUGO_TOKEN_SECRET:?}
+
+  go2rtc:
+    image: alexxit/go2rtc:latest
+    restart: unless-stopped
+    ports:
+      - "${GO2RTC_BIND_IP:-0.0.0.0}:1984:1984"
+      - "${GO2RTC_BIND_IP:-0.0.0.0}:8555:8555"
+      - "${GO2RTC_BIND_IP:-0.0.0.0}:8556:8556"
+    volumes:
+      - ./config/go2rtc.yml:/config/go2rtc.yaml
+
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    restart: unless-stopped
+    ports:
+      - "${MEDIAMTX_BIND_IP:-0.0.0.0}:8554:8554"
+      - "${MEDIAMTX_BIND_IP:-0.0.0.0}:8888:8888"
+    environment:
+      MTX_PROTOCOLS: tcp
+
+  api:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dscyrus07-dev}/airco-api:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    pull_policy: always
+    ports:
+      - "${API_BIND_IP:-0.0.0.0}:8000:8000"
+    environment:
+      <<: *shared-env
+      GO2RTC_URL: http://go2rtc:1984
+      RUNPOD_API_KEY: ${RUNPOD_API_KEY:-}
+      RUNPOD_POD_ID: ${RUNPOD_POD_ID:-}
+      RUNPOD_GPU_TYPE_IDS: ${RUNPOD_GPU_TYPE_IDS:-NVIDIA GeForce RTX 3090,NVIDIA GeForce RTX 4090}
+      GPU_IDLE_TIMEOUT_SECONDS: ${GPU_IDLE_TIMEOUT_SECONDS:-900}
+      GPU_BOOT_TIMEOUT_SECONDS: ${GPU_BOOT_TIMEOUT_SECONDS:-180}
+      GPU_HEALTH_TARGET: ${GPU_HEALTH_TARGET:-}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health',timeout=2).status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  timescaledb_data:
+  redis_data:
+  minio_data:

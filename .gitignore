@@ -1,0 +1,36 @@
+creds.txt
+
+# Local secrets and env files
+Backend/.env
+Backend/.env.local
+Backend/.env.production
+Frontend/.env
+Frontend/.env.local
+Frontend/.env.production
+
+# Vendored binaries pulled in by CI (Ultimate-Tracker weights)
+Backend/services/ultimate-adapter/vendor/
+
+# Python build artifacts
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node / Vite
+Frontend/node_modules/
+Frontend/dist/
+Frontend/.vite/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Model build stamps (locally regenerated)
+Backend/services/triton/models/.local-build/
+Backend/services/savant-pipeline/models/.local-build/

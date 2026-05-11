@@ -1,0 +1,287 @@
+name: Build & push images
+
+# Builds and pushes all production images to GHCR.
+#
+# Triggers:
+#   - Push to main or any deploy/* branch
+#   - Manual dispatch
+#
+# Tags pushed per image:
+#   :sha-<short>  (always)
+#   :latest        (on main / deploy/*)
+#
+# Image owner is derived from ${{ github.repository_owner }} so this
+# works for forks/renames without code changes.
+
+on:
+  push:
+    branches:
+      - main
+      - "deploy/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  python-services:
+    name: Build ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: airco-api
+            dockerfile: Backend/services/api/Dockerfile
+            context: Backend
+          - image: airco-identity-consumer
+            dockerfile: Backend/services/identity-consumer/Dockerfile
+            context: Backend
+          - image: airco-analytics-consumer
+            dockerfile: Backend/services/analytics-consumer/Dockerfile
+            context: Backend
+          - image: airco-snapshot-consumer
+            dockerfile: Backend/services/snapshot-consumer/Dockerfile
+            context: Backend
+          - image: airco-ws-publisher
+            dockerfile: Backend/services/ws-publisher/Dockerfile
+            context: Backend
+          - image: airco-session-control
+            dockerfile: Backend/services/session-control/Dockerfile
+            context: Backend
+          - image: airco-savant-feeder
+            dockerfile: Backend/services/savant-feeder/Dockerfile
+            context: Backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        # GitHub-hosted runners ship with ~14 GB free, which isn't
+        # enough for the savant-deepstream base (~6 GB) plus build
+        # layers. Pruning preinstalled .NET / Android / CodeQL /
+        # Java toolchains frees ~25 GB.
+        run: |
+          set -eux
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo rm -rf /opt/hostedtoolcache/Java_* || true
+          sudo rm -rf /usr/local/share/boost || true
+          sudo rm -rf "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" || true
+          sudo docker image prune --all --force || true
+          df -h
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: tags
+        run: |
+          OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          IMAGE="${{ env.REGISTRY }}/${OWNER_LC}/${{ matrix.image }}"
+          TAGS="${IMAGE}:sha-${SHORT_SHA}"
+          if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.ref }}" == refs/heads/deploy/* ]]; then
+            TAGS="${TAGS},${IMAGE}:latest"
+          fi
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      - name: Build & push
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,scope=${{ matrix.image }},mode=max
+
+  savant-pipeline:
+    # Build context is the savant-pipeline subdir (matches docker-compose.local.yml).
+    name: Build airco-savant-pipeline
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          set -eux
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo rm -rf /opt/hostedtoolcache/Java_* || true
+          sudo rm -rf /usr/local/share/boost || true
+          sudo rm -rf "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" || true
+          sudo docker image prune --all --force || true
+          df -h
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: tags
+        run: |
+          OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          IMAGE="${{ env.REGISTRY }}/${OWNER_LC}/airco-savant-pipeline"
+          TAGS="${IMAGE}:sha-${SHORT_SHA}"
+          if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.ref }}" == refs/heads/deploy/* ]]; then
+            TAGS="${TAGS},${IMAGE}:latest"
+          fi
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      - name: Build & push
+        uses: docker/build-push-action@v5
+        with:
+          context: Backend/services/savant-pipeline
+          file: Backend/services/savant-pipeline/Dockerfile
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha,scope=airco-savant-pipeline
+          cache-to: type=gha,scope=airco-savant-pipeline,mode=max
+
+  triton:
+    name: Build airco-triton
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          set -eux
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo rm -rf /opt/hostedtoolcache/Java_* || true
+          sudo rm -rf /usr/local/share/boost || true
+          sudo rm -rf "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" || true
+          sudo docker image prune --all --force || true
+          df -h
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: tags
+        run: |
+          OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          IMAGE="${{ env.REGISTRY }}/${OWNER_LC}/airco-triton"
+          TAGS="${IMAGE}:sha-${SHORT_SHA}"
+          if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.ref }}" == refs/heads/deploy/* ]]; then
+            TAGS="${TAGS},${IMAGE}:latest"
+          fi
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      - name: Build & push
+        uses: docker/build-push-action@v5
+        with:
+          context: Backend/services/triton
+          file: Backend/services/triton/Dockerfile
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha,scope=airco-triton
+          cache-to: type=gha,scope=airco-triton,mode=max
+
+  ultimate-adapter:
+    # Vendors Ultimate-Tracker sibling weights into the build context
+    # before building, so the Dockerfile sees a stable
+    # services/ultimate-adapter/vendor/ultimate-poc/ path.
+    name: Build airco-ultimate-adapter
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Ultimate-Tracker model weights are tracked in the sibling
+          # path; we still need them on disk for the build. They're
+          # part of this repo (Ultimate-Tracker/ committed at root).
+          fetch-depth: 1
+
+      - name: Free disk space
+        run: |
+          set -eux
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo rm -rf /opt/hostedtoolcache/Java_* || true
+          sudo rm -rf /usr/local/share/boost || true
+          sudo rm -rf "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" || true
+          sudo docker image prune --all --force || true
+          df -h
+
+      - name: Vendor Ultimate-Tracker weights
+        run: |
+          set -euxo pipefail
+          mkdir -p Backend/services/ultimate-adapter/vendor/ultimate-poc
+          if [[ -d Ultimate-Tracker ]]; then
+            cp -a Ultimate-Tracker/. Backend/services/ultimate-adapter/vendor/ultimate-poc/
+          else
+            echo "Ultimate-Tracker/ not found at repo root" >&2
+            exit 1
+          fi
+          ls -la Backend/services/ultimate-adapter/vendor/ultimate-poc/
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: tags
+        run: |
+          OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          IMAGE="${{ env.REGISTRY }}/${OWNER_LC}/airco-ultimate-adapter"
+          TAGS="${IMAGE}:sha-${SHORT_SHA}"
+          if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.ref }}" == refs/heads/deploy/* ]]; then
+            TAGS="${TAGS},${IMAGE}:latest"
+          fi
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      - name: Build & push
+        uses: docker/build-push-action@v5
+        with:
+          context: Backend
+          file: Backend/services/ultimate-adapter/Dockerfile
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha,scope=airco-ultimate-adapter
+          cache-to: type=gha,scope=airco-ultimate-adapter,mode=max
