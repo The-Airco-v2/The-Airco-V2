@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 
 from airco.db import async_session
 from airco.models import Camera as CameraModel
+from api.gpu_controller import get_gpu_controller
 from api.routes import (
     sessions, cameras, persons, employees, attendance,
     alerts, reports, review, employee_intelligence, centrifugo_proxy,
@@ -70,6 +71,22 @@ async def sync_cameras_to_go2rtc() -> None:
         logger.info("go2rtc startup sync: registered %d camera(s)", len(cams))
     except Exception:
         logger.warning("go2rtc startup sync failed", exc_info=True)
+
+
+@app.on_event("startup")
+async def start_gpu_idle_loop() -> None:
+    """Begin polling for an idle GPU pod so we stop it when no
+    sessions are running.
+
+    No-op when RUNPOD_API_KEY / RUNPOD_POD_ID aren't configured
+    (e.g. in local dev where the GPU stack is brought up via compose).
+    """
+    get_gpu_controller().start_idle_loop()
+
+
+@app.on_event("shutdown")
+async def stop_gpu_idle_loop() -> None:
+    await get_gpu_controller().shutdown()
 
 
 @app.exception_handler(IntegrityError)

@@ -44,6 +44,17 @@ class Settings(BaseSettings):
     session_ttl_seconds: int = 60 * 60 * 24 * 7
     session_secure_cookie: bool = True
     session_same_site: str = "lax"
+    session_cookie_domain: str = ""
+
+    # RunPod GPU lifecycle
+    runpod_api_key: str = ""
+    runpod_pod_id: str = ""
+    runpod_gpu_type_ids: str = ""
+    runpod_api_url: str = "https://api.runpod.io/graphql"
+    gpu_idle_timeout_seconds: int = 900
+    gpu_boot_timeout_seconds: int = 180
+    gpu_idle_check_interval_seconds: int = 60
+    gpu_health_target: str = ""
 
     @property
     def database_url(self) -> str:
