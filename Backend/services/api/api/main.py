@@ -28,9 +28,35 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Airco Secure 2.0 API", version="2.0.0")
 
+
+def _cors_origins() -> list[str]:
+    """Allowed origins for cross-origin requests with credentials.
+
+    Includes localhost for dev and the production frontend hosts.
+    Extra origins can be added via the CORS_EXTRA_ORIGINS env var
+    (comma-separated) without a code change.
+    """
+    defaults = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "https://the-airco.net",
+        "https://app.the-airco.com",
+        "https://app.the-airco.net",
+    ]
+    extra = os.getenv("CORS_EXTRA_ORIGINS", "")
+    extras = [o.strip() for o in extra.split(",") if o.strip()]
+    seen: set[str] = set()
+    result: list[str] = []
+    for origin in defaults + extras:
+        if origin not in seen:
+            seen.add(origin)
+            result.append(origin)
+    return result
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "https://the-airco.net"],
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

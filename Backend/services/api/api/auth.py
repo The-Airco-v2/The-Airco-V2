@@ -107,6 +107,17 @@ def decode_session_cookie(cookie_value: str | None) -> dict[str, Any] | None:
         return None
 
 
+def _cookie_domain() -> str | None:
+    """Return the configured cookie domain or None for host-only cookies.
+
+    A configured domain like ``.the-airco.com`` lets the cookie be
+    read by both the API host (api.the-airco.com) and the frontend
+    host (app.the-airco.com). In single-origin dev we leave it unset.
+    """
+    domain = (settings.session_cookie_domain or "").strip()
+    return domain or None
+
+
 def set_session_cookie(response: Response, session: dict[str, Any]) -> None:
     """Persist the signed backend session cookie on the response."""
     response.set_cookie(
@@ -117,6 +128,7 @@ def set_session_cookie(response: Response, session: dict[str, Any]) -> None:
         secure=settings.session_secure_cookie,
         samesite=settings.session_same_site,
         path="/",
+        domain=_cookie_domain(),
     )
 
 
@@ -128,6 +140,7 @@ def clear_session_cookie(response: Response) -> None:
         secure=settings.session_secure_cookie,
         samesite=settings.session_same_site,
         path="/",
+        domain=_cookie_domain(),
     )
 
 
