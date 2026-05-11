@@ -148,3 +148,61 @@ Realtime hooks (`useLive*`) subscribe to Centrifugo channels named per `resolve_
 - `Backend/docker-compose.local.yml` — service topology and compose profiles
 - `Frontend/src/router.tsx` — page map
 - `Frontend/src/lib/api.ts` and `src/lib/auth.tsx` — fetch + auth contract
+
+## Deployment (production)
+
+The production stack splits across three environments:
+
+- **Hetzner Cloud Singapore (CCX13, always on)** — runs the CPU half: Postgres, Redis, MinIO, Centrifugo, FastAPI, go2rtc, mediamtx. Configured via `Backend/docker-compose.cpu.yml` + `.env.production`.
+- **RunPod GPU pod (Community Cloud RTX 3090, on demand)** — runs the GPU half: Triton, savant-pipeline, savant-feeder, identity-consumer, analytics-consumer, snapshot-consumer, session-control, ws-publisher, ultimate-adapter. Configured via `Backend/docker-compose.gpu.yml`. The API resumes/stops the pod on session_start/session_stop.
+- **Cloudflare Pages** — hosts the Vite-built frontend. `Frontend/.env.production.example` documents the three required `VITE_*` URLs.
+
+### Cross-environment networking
+
+Hetzner and RunPod talk via Tailscale (free tier). The Hetzner box advertises itself on the tailnet as `airco-hub`; GPU compose reads `AIRCO_HUB_HOST` to find Postgres / Redis / MinIO / Centrifugo / go2rtc.
+
+### Image registry
+
+All service images live in `ghcr.io/dscyrus07-dev/airco-*`. `.github/workflows/build-images.yml` builds and pushes on every push to `main` or `deploy/**`. Tags: `:sha-<short>` (always) and `:latest` (on main/deploy branches).
+
+GPU model artifacts are baked into the images:
+- `airco-triton` includes ONNX + any pre-built `.plan` engines. TRT engines rebuild per-GPU on first start and persist on RunPod's container filesystem across stop/start.
+- `airco-savant-pipeline` includes the YOLO and SCRFD ONNX/PT under `/models/`.
+- `airco-ultimate-adapter` includes the Ultimate-Tracker weights under `/ultimate-poc/` (CI vendors them from the sibling `Ultimate-Tracker/` directory before docker build).
+
+### GPU boot controller
+
+`services/api/api/runpod_client.py` + `services/api/api/gpu_controller.py` resume / stop the RunPod pod via the RunPod GraphQL API. `start_session` returns 202 with `status: "starting"` when the controller is enabled, then a BackgroundTask boots the pod, polls the configured `GPU_HEALTH_TARGET` URL, and publishes `session_start` to `airco:control`. A startup task (`start_gpu_idle_loop` in `api/main.py`) stops the pod after `GPU_IDLE_TIMEOUT_SECONDS` of zero active sessions. The controller is a no-op when `RUNPOD_API_KEY` / `RUNPOD_POD_ID` aren't set, so local dev works unchanged.
+
+### Reverse proxy + TLS
+
+`deploy/Caddyfile` + `docker-compose.proxy.yml` add Caddy as a TLS terminator on the Hetzner host. Routes:
+- `api.the-airco.com/*` → `api:8000`
+- `api.the-airco.com/centrifugo/*` → `centrifugo:8088` (WebSocket)
+- `api.the-airco.com/minio/*` → `minio:9000`
+- `media.the-airco.com/*` → `go2rtc:1984`
+
+Caddy auto-renews via Let's Encrypt. DNS must point at the Hetzner public IP before TLS issuance can succeed.
+
+### Cross-domain auth
+
+Because the frontend lives on `app.the-airco.com` (Cloudflare) and the API on `api.the-airco.com` (Hetzner), the session cookie must be parent-domain-scoped. Set:
+- `SESSION_COOKIE_DOMAIN=.the-airco.com`
+- `SESSION_SECURE_COOKIE=true`
+- `SESSION_SAME_SITE=none`
+
+The CORS allowlist in `api/main.py` includes the production hosts by default; additional origins go in `CORS_EXTRA_ORIGINS` (comma-separated).
+
+### Cloudflare Pages build settings
+
+When connecting the repo to Cloudflare Pages:
+- **Root directory**: `Frontend`
+- **Build command**: `npm run build`
+- **Output directory**: `dist`
+- **Environment variables**: from `Frontend/.env.production.example` (`VITE_API_URL`, `VITE_WS_URL`, `VITE_GO2RTC_URL`)
+
+`Frontend/public/_redirects` provides the SPA fallback; `Frontend/public/_headers` sets security headers and asset-cache hints.
+
+### Production env file
+
+`Backend/.env.production.template` is the authoritative list of required vars. Always copy to `.env.production` on the Hetzner host and fill placeholders (`__SET_ME__`) before bringing up the compose stack.
