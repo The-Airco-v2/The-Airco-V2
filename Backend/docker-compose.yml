@@ -24,6 +24,7 @@ x-shared-env: &shared-env
   SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-604800}
   SESSION_SECURE_COOKIE: ${SESSION_SECURE_COOKIE:-true}
   SESSION_SAME_SITE: ${SESSION_SAME_SITE:-lax}
+  CORS_EXTRA_ORIGINS: ${CORS_EXTRA_ORIGINS:-}
 
 services:
   # ── Infrastructure ─────────────────────────────────

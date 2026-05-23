@@ -157,6 +157,7 @@ services:
       GPU_IDLE_TIMEOUT_SECONDS: ${GPU_IDLE_TIMEOUT_SECONDS:-900}
       GPU_BOOT_TIMEOUT_SECONDS: ${GPU_BOOT_TIMEOUT_SECONDS:-180}
       GPU_HEALTH_TARGET: ${GPU_HEALTH_TARGET:-}
+      CORS_EXTRA_ORIGINS: ${CORS_EXTRA_ORIGINS:-}
     depends_on:
       timescaledb:
         condition: service_healthy
