@@ -12,7 +12,7 @@ from typing import Literal
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from airco import redis_streams  # late lookup keeps test patches simple
@@ -321,6 +321,7 @@ async def _mark_session_failed(
 @router.post("/{session_id}/stop")
 async def stop_session(
     session_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
     auth: AuthState = Depends(require_admin),
     db: AsyncSession = Depends(get_session),
 ):
@@ -337,7 +338,29 @@ async def stop_session(
         "event_type": "session_stop",
         "session_id": str(session_id),
     })
+    # Immediately stop GPU if no other sessions are still running.
+    # This avoids waiting for the full GPU_IDLE_TIMEOUT_SECONDS after
+    # an explicit user-initiated stop.
+    background_tasks.add_task(_maybe_stop_gpu_after_session, db)
     return {"status": "stopped"}
+
+
+async def _maybe_stop_gpu_after_session(db: AsyncSession) -> None:
+    """Stop the GPU pod immediately if there are no remaining active sessions."""
+    try:
+        result = await db.execute(
+            select(func.count(Session.id)).where(
+                Session.status.in_(("running", "starting"))
+            )
+        )
+        active_count = result.scalar_one() or 0
+        if active_count == 0:
+            controller = get_gpu_controller()
+            if controller.enabled:
+                logger.info("No active sessions remaining — stopping GPU pod immediately")
+                await controller.stop()
+    except Exception:
+        logger.exception("_maybe_stop_gpu_after_session failed")
 
 
 @router.post("/{session_id}/pause")
