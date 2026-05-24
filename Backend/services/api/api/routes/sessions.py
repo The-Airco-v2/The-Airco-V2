@@ -346,21 +346,41 @@ async def stop_session(
 
 
 async def _maybe_stop_gpu_after_session(db: AsyncSession) -> None:
-    """Stop the GPU pod immediately if there are no remaining active sessions."""
+    """Stop the GPU pod after a 60s grace period if no sessions remain active.
+
+    The grace period lets any in-flight analytics / snapshot writes finish
+    cleanly before the pod is killed. If another session starts within the
+    grace window the stop is skipped.
+    """
+    GPU_STOP_GRACE_SECONDS = 60
+
     try:
+        await asyncio.sleep(GPU_STOP_GRACE_SECONDS)
+
+        # Re-check after the grace period — a new session may have started.
         result = await db.execute(
             select(func.count(Session.id)).where(
                 Session.status.in_(("running", "starting"))
             )
         )
         active_count = result.scalar_one() or 0
-        if active_count == 0:
-            controller = get_gpu_controller()
-            if controller.enabled:
-                logger.info("No active sessions remaining — stopping GPU pod immediately")
-                await controller.stop()
+        if active_count > 0:
+            logger.info(
+                "GPU stop skipped — %d session(s) became active during grace period",
+                active_count,
+            )
+            return
+
+        controller = get_gpu_controller()
+        if controller.enabled:
+            logger.info(
+                "No active sessions after %ss grace — stopping GPU pod",
+                GPU_STOP_GRACE_SECONDS,
+            )
+            await controller.stop()
     except Exception:
         logger.exception("_maybe_stop_gpu_after_session failed")
+
 
 
 @router.post("/{session_id}/pause")
