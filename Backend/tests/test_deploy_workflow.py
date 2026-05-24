@@ -21,3 +21,12 @@ def test_manual_dispatch_uses_full_rebuild_flag_but_still_allows_deploy():
     assert "default: false" in workflow
     assert "github.event.inputs.full_rebuild == 'true'" in workflow
     assert "steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'" in workflow
+
+
+def test_hostinger_deploy_runs_migrations_from_app_migrations_dir():
+    workflow = (
+        Path(__file__).resolve().parents[2] / ".github" / "workflows" / "build-images.yml"
+    ).read_text()
+
+    assert "cd /app/migrations && alembic -c alembic.ini upgrade head" in workflow
+    assert "exec -T api alembic upgrade head" not in workflow

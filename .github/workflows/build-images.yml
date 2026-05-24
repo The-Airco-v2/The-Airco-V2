@@ -412,6 +412,6 @@ jobs:
             docker compose -f docker-compose.cpu.yml --env-file .env.production up -d
 
             echo "Running database migrations..."
-            docker compose -f docker-compose.cpu.yml --env-file .env.production exec -T api alembic upgrade head
+            docker compose -f docker-compose.cpu.yml --env-file .env.production exec -T api sh -lc 'cd /app/migrations && alembic -c alembic.ini upgrade head'
 
             echo "Deployment completed successfully!"
