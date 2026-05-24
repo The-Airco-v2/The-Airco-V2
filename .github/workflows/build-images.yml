@@ -91,7 +91,7 @@ jobs:
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           IMAGE="${{ env.REGISTRY }}/${OWNER_LC}/${{ matrix.image }}"
           TAGS="${IMAGE}:sha-${SHORT_SHA}"
-          if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.ref }}" == refs/heads/deploy/* ]]; then
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
             TAGS="${TAGS},${IMAGE}:latest"
           fi
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
@@ -144,7 +144,7 @@ jobs:
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           IMAGE="${{ env.REGISTRY }}/${OWNER_LC}/airco-savant-pipeline"
           TAGS="${IMAGE}:sha-${SHORT_SHA}"
-          if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.ref }}" == refs/heads/deploy/* ]]; then
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
             TAGS="${TAGS},${IMAGE}:latest"
           fi
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
@@ -196,7 +196,7 @@ jobs:
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           IMAGE="${{ env.REGISTRY }}/${OWNER_LC}/airco-triton"
           TAGS="${IMAGE}:sha-${SHORT_SHA}"
-          if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.ref }}" == refs/heads/deploy/* ]]; then
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
             TAGS="${TAGS},${IMAGE}:latest"
           fi
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
@@ -268,7 +268,7 @@ jobs:
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           IMAGE="${{ env.REGISTRY }}/${OWNER_LC}/airco-ultimate-adapter"
           TAGS="${IMAGE}:sha-${SHORT_SHA}"
-          if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.ref }}" == refs/heads/deploy/* ]]; then
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
             TAGS="${TAGS},${IMAGE}:latest"
           fi
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
