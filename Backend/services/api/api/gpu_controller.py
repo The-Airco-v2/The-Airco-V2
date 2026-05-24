@@ -36,7 +36,7 @@ from airco.db import async_session
 from airco.models import Session as SessionModel
 from airco.redis_streams import get_redis
 
-from api.runpod_client import PodState, RunPodClient, RunPodError
+from api.runpod_client import PodInfo, PodState, RunPodClient, RunPodError
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,13 @@ class GpuController:
                 api_url=settings.runpod_api_url,
             )
         return self._client
+
+    async def get_pod_info(self) -> PodInfo | None:
+        """Fetch the current PodInfo from RunPod if the controller is enabled."""
+        if not self.enabled:
+            return None
+        client = self._get_client()
+        return await client.get_pod(settings.runpod_pod_id)
 
     async def ensure_running(self) -> None:
         """Block until the GPU pod is RUNNING and the health target is reachable.

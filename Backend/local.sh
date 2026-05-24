@@ -31,6 +31,22 @@ if [[ ! -f "$ENV_FILE" ]]; then
   exit 1
 fi
 
+# Detect local GPU if nvidia-smi is available
+LOCAL_GPU_NAME=""
+LOCAL_GPU_MEM=""
+LOCAL_GPU_UUID=""
+if command -v nvidia-smi &>/dev/null; then
+  GPU_INFO=$(nvidia-smi --query-gpu=name,memory.total,uuid --format=csv,noheader,nounits | head -n 1 || true)
+  if [[ -n "$GPU_INFO" ]]; then
+    LOCAL_GPU_NAME=$(echo "$GPU_INFO" | cut -d',' -f1 | xargs)
+    LOCAL_GPU_MEM=$(echo "$GPU_INFO" | cut -d',' -f2 | xargs)
+    LOCAL_GPU_UUID=$(echo "$GPU_INFO" | cut -d',' -f3 | xargs)
+  fi
+fi
+export LOCAL_GPU_NAME
+export LOCAL_GPU_MEM
+export LOCAL_GPU_UUID
+
 run_compose() {
   $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
 }

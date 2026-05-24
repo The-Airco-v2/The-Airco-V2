@@ -1,4 +1,4 @@
-import { Activity, Play, PlayCircle, Plus, Square } from "lucide-react";
+import { Activity, Cpu, Play, PlayCircle, Plus, Square } from "lucide-react";
 import { useState } from "react";
 import { PageHeader } from "@/components/shared/PageHeader";
 import { StatusBadge } from "@/components/shared/StatusBadge";
@@ -12,6 +12,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useCameras } from "@/hooks/useCameras";
 import {
   useCreateSession,
+  useGpuStatus,
   useSessions,
   useStartSession,
   useStopSession,
@@ -23,6 +24,7 @@ import { toast } from "sonner";
 export default function SessionsPage() {
   const { data: sessions, isLoading, error } = useSessions();
   const { data: ultimateStatus } = useUltimateRuntimeStatus();
+  const { data: gpuStatus } = useGpuStatus();
   const { data: cameras } = useCameras();
   const createSession = useCreateSession();
   const startSession = useStartSession();
@@ -88,24 +90,61 @@ export default function SessionsPage() {
         }
       />
 
-      <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <p className="text-xs uppercase tracking-wide text-zinc-500">Ultimate Adapter</p>
-            <p className="mt-1 text-sm font-medium text-zinc-100">
-              {ultimateStatus?.status === "ok"
-                ? "Healthy"
-                : ultimateStatus?.status === "degraded"
-                  ? "Degraded"
-                  : "Unknown"}
-            </p>
+      <div className="grid gap-6 md:grid-cols-2">
+        {/* Ultimate Adapter Status */}
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-xs uppercase tracking-wide text-zinc-500">Ultimate Adapter</p>
+              <p className="mt-1 text-sm font-medium text-zinc-100">
+                {ultimateStatus?.status === "ok"
+                  ? "Healthy"
+                  : ultimateStatus?.status === "degraded"
+                    ? "Degraded"
+                    : "Unknown"}
+              </p>
+            </div>
+            <Activity className="mt-0.5 h-4 w-4 text-sky-400" />
           </div>
-          <Activity className="mt-0.5 h-4 w-4 text-sky-400" />
+          <div className="mt-3 flex flex-wrap gap-4 text-xs text-zinc-400">
+            <span>Active session: {ultimateStatus?.active_session_id ? "Attached" : "Idle"}</span>
+            <span>Workers: {ultimateStatus?.worker_count ?? 0}</span>
+            <span>Cameras: {ultimateStatus?.active_camera_count ?? 0}</span>
+          </div>
         </div>
-        <div className="mt-3 flex flex-wrap gap-4 text-xs text-zinc-400">
-          <span>Active session: {ultimateStatus?.active_session_id ? "Attached" : "Idle"}</span>
-          <span>Workers: {ultimateStatus?.worker_count ?? 0}</span>
-          <span>Cameras: {ultimateStatus?.active_camera_count ?? 0}</span>
+
+        {/* Allocated GPU Status */}
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-xs uppercase tracking-wide text-zinc-500">
+                Allocated GPU ({gpuStatus?.type === "runpod" ? "RunPod" : "Local Dev"})
+              </p>
+              <div className="mt-1 flex items-center gap-2">
+                <p className="text-sm font-medium text-zinc-100">
+                  {gpuStatus?.gpu_name || "No GPU detected"}
+                </p>
+                <span className="flex h-2 w-2 relative">
+                  <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${gpuStatus?.status === "ON" ? "bg-emerald-400" : "bg-zinc-500"}`}></span>
+                  <span className={`relative inline-flex rounded-full h-2 w-2 ${gpuStatus?.status === "ON" ? "bg-emerald-500" : "bg-zinc-600"}`}></span>
+                </span>
+                <span className="text-xs text-zinc-400">
+                  {gpuStatus?.status === "ON" ? "ON" : "OFF"}
+                </span>
+              </div>
+            </div>
+            <Cpu className="mt-0.5 h-4 w-4 text-emerald-400" />
+          </div>
+          <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-400">
+            <span>Memory: {gpuStatus?.memory || "N/A"}</span>
+            <span>ID: <code className="text-zinc-300 font-mono text-[10px]">{gpuStatus?.gpu_id ? (gpuStatus.gpu_id.length > 15 ? `${gpuStatus.gpu_id.substring(0, 12)}...` : gpuStatus.gpu_id) : "N/A"}</code></span>
+            {gpuStatus?.configuration?.["VCPU Count"] && (
+              <span>VCPUs: {gpuStatus.configuration["VCPU Count"]}</span>
+            )}
+            {gpuStatus?.configuration?.["Volume Disk"] && (
+              <span>Volume: {gpuStatus.configuration["Volume Disk"]}</span>
+            )}
+          </div>
         </div>
       </div>
 

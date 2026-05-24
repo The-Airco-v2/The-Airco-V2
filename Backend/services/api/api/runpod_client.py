@@ -85,6 +85,14 @@ class RunPodClient:
                 desiredStatus
                 lastStatusChange
                 gpuCount
+                vcpuCount
+                memoryInGb
+                volumeInGb
+                containerDiskInGb
+                imageName
+                machine {
+                    gpuDisplayName
+                }
                 runtime {
                     ports {
                         ip

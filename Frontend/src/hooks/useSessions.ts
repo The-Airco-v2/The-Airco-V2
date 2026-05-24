@@ -19,6 +19,7 @@ import type {
   Session,
   StartSessionPayload,
   UltimateRuntimeStatus,
+  GpuStatus,
 } from "@/types";
 
 export const overviewTodayQueryKey = ["overview-today"] as const;
@@ -218,6 +219,14 @@ export function useUltimateRuntimeStatus() {
     queryKey: ["ultimate-runtime-status"],
     queryFn: () =>
       apiFetchJson<UltimateRuntimeStatus>("/api/v2/sessions/runtime/ultimate-status"),
+    refetchInterval: 5_000,
+  });
+}
+
+export function useGpuStatus() {
+  return useQuery({
+    queryKey: ["gpu-status"],
+    queryFn: () => apiFetchJson<GpuStatus>("/api/v2/sessions/runtime/gpu-status"),
     refetchInterval: 5_000,
   });
 }

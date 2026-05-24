@@ -133,6 +133,17 @@ export interface UltimateRuntimeStatus {
   workers: UltimateRuntimeWorkerStatus[];
 }
 
+export interface GpuStatus {
+  type: "runpod" | "local";
+  is_enabled: boolean;
+  status: "ON" | "OFF";
+  gpu_name: string | null;
+  gpu_count: number | null;
+  gpu_id: string | null;
+  memory: string | null;
+  configuration: Record<string, string> | null;
+}
+
 export type AlertSeverity = "critical" | "high" | "medium" | "low";
 
 export interface Alert {

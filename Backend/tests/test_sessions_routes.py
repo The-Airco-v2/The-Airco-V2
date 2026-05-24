@@ -226,3 +226,35 @@ def test_get_ultimate_runtime_status_returns_runtime_payload(api_client):
     assert body["status"] == "ok"
     assert body["selector"] == "ultimate"
     assert body["worker_count"] == 1
+
+
+def test_get_gpu_status_local_no_gpu(api_client):
+    with patch("shutil.which", return_value=None), \
+         patch.dict("os.environ", {}, clear=True):
+        response = api_client.get("/api/v2/sessions/runtime/gpu-status")
+        
+    assert response.status_code == 200
+    body = response.json()
+    assert body["type"] == "local"
+    assert body["is_enabled"] is False
+    assert body["status"] == "OFF"
+    assert body["gpu_name"] == "No local GPU detected"
+
+
+def test_get_gpu_status_local_env_vars(api_client):
+    env = {
+        "LOCAL_GPU_NAME": "NVIDIA GeForce RTX 3060",
+        "LOCAL_GPU_MEM": "6144",
+        "LOCAL_GPU_UUID": "GPU-xyz"
+    }
+    with patch.dict("os.environ", env, clear=True):
+        response = api_client.get("/api/v2/sessions/runtime/gpu-status")
+        
+    assert response.status_code == 200
+    body = response.json()
+    assert body["type"] == "local"
+    assert body["is_enabled"] is True
+    assert body["status"] == "ON"
+    assert body["gpu_name"] == "NVIDIA GeForce RTX 3060"
+    assert body["memory"] == "6144 MiB VRAM"
+    assert body["gpu_id"] == "GPU-xyz"

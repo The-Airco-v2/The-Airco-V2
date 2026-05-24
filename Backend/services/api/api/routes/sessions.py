@@ -5,9 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import shutil
+import subprocess
 import uuid
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Literal, Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import JSONResponse
@@ -21,7 +24,8 @@ from airco.redis_streams import get_redis
 from airco.models import Session, SessionCamera, Camera
 from api.auth import AuthState, require_authenticated, require_admin
 from api.gpu_controller import get_gpu_controller
-from api.runpod_client import RunPodError
+from api.runpod_client import RunPodError, PodState
+from airco.config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -166,6 +170,159 @@ async def get_ultimate_runtime_status(
     else:
         payload = raw_payload
     return UltimateRuntimeStatusResponse.model_validate(payload)
+
+
+class GpuStatusResponse(BaseModel):
+    type: str  # "runpod" or "local"
+    is_enabled: bool
+    status: str  # "ON" or "OFF"
+    gpu_name: str | None = None
+    gpu_count: int | None = None
+    gpu_id: str | None = None
+    memory: str | None = None
+    configuration: dict[str, str] | None = None
+
+
+def get_local_gpu_info_fallback() -> dict[str, Any]:
+    if not shutil.which("nvidia-smi"):
+        return {
+            "type": "local",
+            "is_enabled": False,
+            "status": "OFF",
+            "gpu_name": "No local GPU detected",
+            "gpu_count": 0,
+            "gpu_id": None,
+            "memory": None,
+            "configuration": {}
+        }
+    
+    try:
+        cmd = ["nvidia-smi", "--query-gpu=index,name,memory.total,uuid", "--format=csv,noheader,nounits"]
+        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        lines = [line.strip() for line in res.stdout.strip().split("\n") if line.strip()]
+        if not lines:
+            return {
+                "type": "local",
+                "is_enabled": False,
+                "status": "OFF",
+                "gpu_name": "No local GPU detected",
+                "gpu_count": 0,
+                "gpu_id": None,
+                "memory": None,
+                "configuration": {}
+            }
+        
+        parts = [p.strip() for p in lines[0].split(",")]
+        gpu_index = parts[0] if len(parts) > 0 else "0"
+        gpu_name = parts[1] if len(parts) > 1 else "Local NVIDIA GPU"
+        memory_total = parts[2] if len(parts) > 2 else None
+        gpu_uuid = parts[3] if len(parts) > 3 else f"local-gpu-{gpu_index}"
+        
+        memory_str = f"{memory_total} MiB VRAM" if memory_total else None
+        
+        return {
+            "type": "local",
+            "is_enabled": True,
+            "status": "ON",
+            "gpu_name": gpu_name,
+            "gpu_count": len(lines),
+            "gpu_id": gpu_uuid,
+            "memory": memory_str,
+            "configuration": {
+                "GPU UUID": gpu_uuid,
+                "VRAM": f"{memory_total} MiB" if memory_total else "Unknown",
+                "GPU Index": gpu_index,
+                "Total GPUs": str(len(lines))
+            }
+        }
+    except Exception as e:
+        logger.warning("Failed to query nvidia-smi: %s", e)
+        return {
+            "type": "local",
+            "is_enabled": False,
+            "status": "OFF",
+            "gpu_name": "No local GPU detected",
+            "gpu_count": 0,
+            "gpu_id": None,
+            "memory": None,
+            "configuration": {"error": str(e)}
+        }
+
+
+@router.get("/runtime/gpu-status", response_model=GpuStatusResponse)
+async def get_gpu_status(
+    auth: AuthState = Depends(require_authenticated),
+):
+    _ = auth
+    controller = get_gpu_controller()
+    
+    if controller.enabled:
+        try:
+            pod = await controller.get_pod_info()
+            if pod:
+                raw = pod.raw
+                gpu_name = raw.get("machine", {}).get("gpuDisplayName") or "Unknown GPU"
+                status = "ON" if pod.state == PodState.RUNNING else "OFF"
+                
+                # configuration details
+                config = {
+                    "Pod ID": pod.pod_id,
+                    "System RAM": f"{raw.get('memoryInGb', 'unknown')} GB",
+                    "VCPU Count": f"{raw.get('vcpuCount', 'unknown')}",
+                    "Volume Disk": f"{raw.get('volumeInGb', 'unknown')} GB",
+                    "Container Disk": f"{raw.get('containerDiskInGb', 'unknown')} GB",
+                    "Image": raw.get("imageName") or "unknown"
+                }
+                
+                memory_str = f"{raw.get('memoryInGb')} GB System RAM" if raw.get('memoryInGb') else None
+                
+                return GpuStatusResponse(
+                    type="runpod",
+                    is_enabled=True,
+                    status=status,
+                    gpu_name=gpu_name,
+                    gpu_count=pod.gpu_count,
+                    gpu_id=pod.pod_id,
+                    memory=memory_str,
+                    configuration=config
+                )
+        except Exception as exc:
+            logger.exception("Failed to query RunPod GPU status")
+            return GpuStatusResponse(
+                type="runpod",
+                is_enabled=True,
+                status="OFF",
+                gpu_name="RunPod GPU (Query Failed)",
+                gpu_count=None,
+                gpu_id=settings.runpod_pod_id,
+                memory=None,
+                configuration={"error": str(exc)}
+            )
+            
+    # Local GPU fallback
+    local_name = os.environ.get("LOCAL_GPU_NAME")
+    local_mem = os.environ.get("LOCAL_GPU_MEM")
+    local_uuid = os.environ.get("LOCAL_GPU_UUID")
+    
+    if local_name:
+        memory_str = f"{local_mem} MiB VRAM" if local_mem else None
+        return GpuStatusResponse(
+            type="local",
+            is_enabled=True,
+            status="ON",
+            gpu_name=local_name,
+            gpu_count=1,
+            gpu_id=local_uuid or "local-gpu-0",
+            memory=memory_str,
+            configuration={
+                "GPU UUID": local_uuid or "N/A",
+                "VRAM": f"{local_mem} MiB" if local_mem else "Unknown",
+                "GPU Index": "0"
+            }
+        )
+        
+    local_info = get_local_gpu_info_fallback()
+    return GpuStatusResponse(**local_info)
 
 
 @router.get("/{session_id}", response_model=SessionResponse)

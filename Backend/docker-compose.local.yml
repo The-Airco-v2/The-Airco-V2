@@ -32,6 +32,9 @@ x-shared-env: &shared-env
   SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-604800}
   SESSION_SECURE_COOKIE: ${SESSION_SECURE_COOKIE:-false}
   SESSION_SAME_SITE: ${SESSION_SAME_SITE:-lax}
+  LOCAL_GPU_NAME: ${LOCAL_GPU_NAME:-}
+  LOCAL_GPU_MEM: ${LOCAL_GPU_MEM:-}
+  LOCAL_GPU_UUID: ${LOCAL_GPU_UUID:-}
 
 services:
   # ── Infrastructure ───────────────────────────────────────
