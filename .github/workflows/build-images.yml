@@ -3,17 +3,20 @@ name: Build & push images
 # Builds and pushes all production images to GHCR.
 #
 # Triggers:
-#   - Push to main or any deploy/* branch
+#   - Push to main branch
 #   - Manual dispatch
 #
 # Tags pushed per image:
 #   :sha-<short>  (always)
-#   :latest        (on main / deploy/*)
+#   :latest        (on main)
 #
 # Image owner is derived from ${{ github.repository_owner }} so this
 # works for forks/renames without code changes.
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 
@@ -32,32 +35,50 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - image: airco-api
+          - key: api
+            image: airco-api
             dockerfile: Backend/services/api/Dockerfile
             context: Backend
-          - image: airco-identity-consumer
+          - key: identity-consumer
+            image: airco-identity-consumer
             dockerfile: Backend/services/identity-consumer/Dockerfile
             context: Backend
-          - image: airco-analytics-consumer
+          - key: analytics-consumer
+            image: airco-analytics-consumer
             dockerfile: Backend/services/analytics-consumer/Dockerfile
             context: Backend
-          - image: airco-snapshot-consumer
+          - key: snapshot-consumer
+            image: airco-snapshot-consumer
             dockerfile: Backend/services/snapshot-consumer/Dockerfile
             context: Backend
-          - image: airco-ws-publisher
+          - key: ws-publisher
+            image: airco-ws-publisher
             dockerfile: Backend/services/ws-publisher/Dockerfile
             context: Backend
-          - image: airco-session-control
+          - key: session-control
+            image: airco-session-control
             dockerfile: Backend/services/session-control/Dockerfile
             context: Backend
-          - image: airco-savant-feeder
+          - key: savant-feeder
+            image: airco-savant-feeder
             dockerfile: Backend/services/savant-feeder/Dockerfile
             context: Backend
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Detect path changes
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            changed:
+              - 'Backend/services/${{ matrix.key }}/**'
+              - 'Backend/shared/**'
+              - '.github/workflows/build-images.yml'
+
       - name: Free disk space
+        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
         # GitHub-hosted runners ship with ~14 GB free, which isn't
         # enough for the savant-deepstream base (~6 GB) plus build
         # layers. Pruning preinstalled .NET / Android / CodeQL /
@@ -75,9 +96,11 @@ jobs:
           df -h
 
       - name: Set up Docker Buildx
+        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
+        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -85,6 +108,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Compute tags
+        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
         id: tags
         run: |
           OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
@@ -97,6 +121,7 @@ jobs:
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
 
       - name: Build & push
+        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
         uses: docker/build-push-action@v5
         with:
           context: ${{ matrix.context }}
@@ -114,7 +139,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Detect path changes
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            changed:
+              - 'Backend/services/savant-pipeline/**'
+              - '.github/workflows/build-images.yml'
+
       - name: Free disk space
+        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           set -eux
           sudo rm -rf /usr/share/dotnet || true
@@ -128,9 +163,11 @@ jobs:
           df -h
 
       - name: Set up Docker Buildx
+        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
+        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -138,6 +175,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Compute tags
+        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
         id: tags
         run: |
           OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
@@ -150,6 +188,7 @@ jobs:
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
 
       - name: Build & push
+        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
         uses: docker/build-push-action@v5
         with:
           context: Backend/services/savant-pipeline
@@ -166,7 +205,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Detect path changes
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            changed:
+              - 'Backend/services/triton/**'
+              - '.github/workflows/build-images.yml'
+
       - name: Free disk space
+        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           set -eux
           sudo rm -rf /usr/share/dotnet || true
@@ -180,9 +229,11 @@ jobs:
           df -h
 
       - name: Set up Docker Buildx
+        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
+        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -190,6 +241,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Compute tags
+        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
         id: tags
         run: |
           OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
@@ -202,6 +254,7 @@ jobs:
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
 
       - name: Build & push
+        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
         uses: docker/build-push-action@v5
         with:
           context: Backend/services/triton
@@ -226,7 +279,18 @@ jobs:
           # part of this repo (Ultimate-Tracker/ committed at root).
           fetch-depth: 1
 
+      - name: Detect path changes
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            changed:
+              - 'Backend/services/ultimate-adapter/**'
+              - 'Ultimate-Tracker/**'
+              - '.github/workflows/build-images.yml'
+
       - name: Free disk space
+        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           set -eux
           sudo rm -rf /usr/share/dotnet || true
@@ -240,6 +304,7 @@ jobs:
           df -h
 
       - name: Vendor Ultimate-Tracker weights
+        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           set -euxo pipefail
           mkdir -p Backend/services/ultimate-adapter/vendor/ultimate-poc
@@ -252,9 +317,11 @@ jobs:
           ls -la Backend/services/ultimate-adapter/vendor/ultimate-poc/
 
       - name: Set up Docker Buildx
+        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
+        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -262,6 +329,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Compute tags
+        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
         id: tags
         run: |
           OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
@@ -274,6 +342,7 @@ jobs:
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
 
       - name: Build & push
+        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
         uses: docker/build-push-action@v5
         with:
           context: Backend
@@ -282,3 +351,47 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha,scope=airco-ultimate-adapter
           cache-to: type=gha,scope=airco-ultimate-adapter,mode=max
+
+  deploy:
+    name: Deploy to Hostinger VPS
+    needs: [python-services, savant-pipeline, triton, ultimate-adapter]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect backend changes
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            changed:
+              - 'Backend/**'
+              - '.github/workflows/build-images.yml'
+
+      - name: Deploy via SSH
+        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 72.61.239.69
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -e
+            echo "Navigating to app directory..."
+            cd /app/airco
+            
+            echo "Pulling latest code changes from Git..."
+            git pull origin main
+            
+            echo "Pulling latest Docker images from GHCR..."
+            docker compose -f docker-compose.cpu.yml --env-file .env.production pull
+            
+            echo "Recreating containers with updated images..."
+            docker compose -f docker-compose.cpu.yml --env-file .env.production up -d
+            
+            echo "Running database migrations..."
+            docker compose -f docker-compose.cpu.yml --env-file .env.production exec -T api alembic upgrade head
+            
+            echo "Deployment completed successfully!"
