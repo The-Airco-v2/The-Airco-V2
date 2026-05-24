@@ -35,7 +35,11 @@ RUN curl -fsSL https://tailscale.com/install.sh | sh
 
 # Install Podman
 RUN apt-get update -qq && \
-    apt-get install -y --no-install-recommends podman && \
+    apt-get install -y --no-install-recommends \
+        podman \
+        uidmap \
+        slirp4netns \
+        fuse-overlayfs && \
     rm -rf /var/lib/apt/lists/*
 
 # Install podman-compose
