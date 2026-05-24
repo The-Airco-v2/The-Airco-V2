@@ -8,8 +8,8 @@ Current production deployment for Airco Secure V2. Architecture context lives in
 |---|---|---|---|
 | Frontend | Cloudflare Pages | React SPA | `https://the-airco-v2.pages.dev` / `https://app.the-airco.net` |
 | CPU stack | Hostinger KVM 2 | API, Postgres, Redis, MinIO, Centrifugo, go2rtc, mediamtx, CPU consumers, Caddy | `72.61.239.69` / `100.103.80.105` |
-| GPU stack | RunPod pod | Triton, Savant, identity pipeline, alternate Ultimate adapter | RunPod pod `an5cwp48emcmjj` |
-| Registry | GHCR | Service images | `ghcr.io/the-airco-v2/airco-*` |
+| GPU stack | RunPod pod | Triton, Savant, identity pipeline, alternate Ultimate adapter | See `RUNPOD_POD_ID` in `/app/airco/.env.production` |
+| Registry | GHCR | Private bootstrap + service images | `ghcr.io/the-airco-v2/airco-*` |
 | Overlay network | Tailscale | CPU↔GPU private traffic | `airco-hub` / `airco-gpu` |
 
 ## End-to-end deployment flow
@@ -45,6 +45,7 @@ Important path-filter rules:
 - `Backend/services/savant-pipeline/**` rebuilds only `airco-savant-pipeline`.
 - `Backend/services/triton/**` rebuilds only `airco-triton`.
 - `Backend/services/ultimate-adapter/**` or `Ultimate-Tracker/**` rebuild `airco-ultimate-adapter`.
+- `Backend/docker/**` does not rebuild from this workflow; the outer RunPod bootstrap image is published separately by `.github/workflows/build-runpod-bootstrap.yml`.
 
 ### 3. Deploy CPU stack to Hostinger
 
@@ -78,14 +79,51 @@ docker compose -f docker-compose.cpu.yml --env-file .env.production exec -T api 
 
 The GPU pod is resumed and stopped by the API through RunPod GraphQL. On pod startup:
 
-1. `dockerArgs` launches `bash -c "..."` and writes logs to `/workspace/bootstrap.log`
-2. Installs `curl` and `git`
-3. Starts Tailscale and joins as `airco-gpu`
-4. Clones or pulls `/workspace/The-Airco-V2`
-5. Runs `Backend/scripts/gpu_bootstrap.sh`
-6. `gpu_bootstrap.sh` installs Podman + `podman-compose`, logs into GHCR, pulls GPU images, and runs `podman-compose -f docker-compose.gpu.yml up -d`
+1. RunPod pulls the outer bootstrap image `ghcr.io/the-airco-v2/airco-runpod-bootstrap:latest`
+2. The image ENTRYPOINT writes logs to `/workspace/bootstrap.log`
+3. The entrypoint starts Tailscale and joins the tailnet as `airco-gpu`
+4. The entrypoint clones or pulls `/workspace/The-Airco-V2`
+5. The entrypoint writes `Backend/.env.production` from pod env vars
+6. The entrypoint logs into GHCR with `GHCR_PAT`, pulls the inner GPU images with Podman, and runs `podman-compose -f docker-compose.gpu.yml up -d`
 
 The GPU pod uses Podman instead of Docker because RunPod community pods do not provide the privileges Docker needs for bridge networking and iptables.
+
+Private GHCR setup for the outer bootstrap image:
+
+1. Keep `airco-runpod-bootstrap` private in GitHub Packages.
+2. In RunPod, create a container registry auth for GHCR using a GitHub username and PAT with package-read access.
+3. Record the resulting `containerRegistryAuthId`.
+4. Set `RUNPOD_CONTAINER_REGISTRY_AUTH_ID=<id>` in `Backend/.env.runpod`.
+5. The script passes that ID to RunPod so the outer image pull succeeds before the container starts.
+6. Set `AUTO_LINK_HOSTINGER=1` in `Backend/.env.runpod` for one-command cutover; the script updates `RUNPOD_POD_ID` on Hostinger and restarts the API after pod creation.
+
+Recommended repo-native flow:
+
+1. Copy `Backend/.env.runpod.template` to `Backend/.env.runpod`.
+2. Fill in the RunPod, GHCR, Tailscale, and app secrets once.
+3. Run:
+   `python3 Backend/scripts/create_runpod_pod.py --env-file Backend/.env.runpod`
+
+GitHub Actions flow:
+
+1. Save the filled `Backend/.env.runpod` contents as the GitHub secret `RUNPOD_ENV_FILE`.
+2. Ensure `SSH_PRIVATE_KEY` is configured for Hostinger access.
+3. Run `.github/workflows/deploy-runpod-pod.yml`.
+4. Leave `rebuild_bootstrap=true` when bootstrap image changes are included; set it to `false` only when reusing the already-published bootstrap image.
+
+CI/CD split:
+
+- `.github/workflows/build-images.yml` builds and deploys the CPU stack plus the normal service images.
+- `.github/workflows/build-runpod-bootstrap.yml` rebuilds only the outer RunPod bootstrap image.
+- `.github/workflows/deploy-runpod-pod.yml` is the end-to-end GPU pod creation workflow. It writes `Backend/.env.runpod` from `RUNPOD_ENV_FILE`, optionally rebuilds the bootstrap image, creates the pod, and links Hostinger automatically.
+
+Notes:
+
+- `GHCR_PAT` is still required as a pod env var even when `RUNPOD_CONTAINER_REGISTRY_AUTH_ID` is set.
+- `RUNPOD_CONTAINER_REGISTRY_AUTH_ID` authenticates RunPod's outer image pull.
+- `GHCR_PAT` authenticates the bootstrap container's `git clone` and inner `podman login ghcr.io`.
+- `AUTO_LINK_HOSTINGER=1` makes `create_runpod_pod.py` update `/app/airco/.env.production` and restart `airco-api` over SSH. Override `HOSTINGER_SSH_TARGET`, `HOSTINGER_ENV_FILE`, or `HOSTINGER_APP_DIR` if your host layout changes.
+- `Backend/.env.runpod` is local-only and ignored by git. `Backend/.env.runpod.template` is the checked-in template.
 
 ### 5. Frontend deployment
 
@@ -131,7 +169,8 @@ ssh root@72.61.239.69 'tailscale status'
 ## RunPod GPU stack
 
 Key facts:
-- Pod ID: `an5cwp48emcmjj`
+- Pod ID: see `RUNPOD_POD_ID` on Hostinger for the currently linked pod
+- Outer image: `ghcr.io/the-airco-v2/airco-runpod-bootstrap:latest`
 - Persistent volume: `/workspace`
 - Repo checkout: `/workspace/The-Airco-V2`
 - Bootstrap log: `/workspace/bootstrap.log`
@@ -173,3 +212,4 @@ This is required because the SPA runs on `app.the-airco.net` and the API runs on
 - Lightweight manual deploys should use `workflow_dispatch` with `full_rebuild=false`.
 - Heavy GPU images are expected to take much longer than CPU images when they do rebuild.
 - Recreating the RunPod pod can change its Tailscale IP, but the hostname remains `airco-gpu`.
+- A private `airco-runpod-bootstrap` image requires `RUNPOD_CONTAINER_REGISTRY_AUTH_ID` at pod creation time; `GHCR_PAT` alone is not enough for the initial RunPod pull.

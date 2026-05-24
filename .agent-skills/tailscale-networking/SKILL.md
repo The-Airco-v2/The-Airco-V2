@@ -29,12 +29,12 @@ Tailscale mesh — Postgres, Redis, MinIO, Centrifugo, go2rtc.
 
 - **Tailscale Auth Key:** `tskey-auth-kCi9o6yMF211CNTRL-...`
 - Stored in: `TAILSCALE_AUTHKEY` in `/app/airco/.env.production` on VPS
-- Used by GPU pod in `dockerArgs` to connect on startup
+- Used by the bootstrap image entrypoint to connect on startup
 
 > [!WARNING]
 > Tailscale auth keys expire. If the GPU pod can't connect (tailscale up fails with
 > "auth key expired"), generate a new key at https://login.tailscale.com/admin/settings/keys
-> and update both the VPS env file and the pod's dockerArgs (requires re-creating the pod).
+> and update both the VPS env file and `Backend/.env.runpod` / `RUNPOD_ENV_FILE` (requires re-creating the pod).
 
 ## Check Tailscale Status
 
@@ -70,24 +70,28 @@ ssh -i ~/.ssh/id_ed25519 root@72.61.239.69 "ssh -o StrictHostKeyChecking=no root
 
 ## GPU Pod Tailscale Startup
 
-The GPU pod runs Tailscale via `dockerArgs`. State is persisted to `/workspace/tailscale.state`
-so the same node identity is reused across pod stop/start:
+The GPU pod runs Tailscale from `Backend/docker/bootstrap-entrypoint.sh`. State
+is persisted to `/workspace/tailscale.state` so the same node identity is reused
+across pod stop/start:
 
 ```bash
-# On the pod (run as part of dockerArgs bootstrap):
-tailscaled --state=/workspace/tailscale.state >/tmp/tailscaled.log 2>&1 &
-sleep 5
-tailscale up --authkey=tskey-auth-kCi9o6yMF211CNTRL-... \
+# On the pod (run as part of bootstrap-entrypoint.sh):
+TAILSCALE_SOCKET=/tmp/tailscaled.sock
+tailscaled --state=/workspace/tailscale.state \
+  --socket="${TAILSCALE_SOCKET}" \
+  --tun=userspace-networking >/tmp/tailscaled.log 2>&1 &
+sleep 8
+tailscale --socket="${TAILSCALE_SOCKET}" up --authkey=tskey-auth-kCi9o6yMF211CNTRL-... \
   --accept-routes=false --hostname=airco-gpu
 
 # Check if connected (on pod):
-tailscale status
-tailscale ip  # shows pod's Tailscale IP
+tailscale --socket="${TAILSCALE_SOCKET}" status
+tailscale --socket="${TAILSCALE_SOCKET}" ip
 ```
 
 The usual startup order is:
 1. Hostinger API resumes the RunPod pod
-2. Pod bootstrap starts `tailscaled`
+2. Pod bootstrap starts `tailscaled` in userspace networking mode
 3. Pod joins the tailnet as `airco-gpu`
 4. Pod bootstrap pulls `/workspace/The-Airco-V2` and starts the GPU compose stack
 
@@ -113,8 +117,9 @@ The usual startup order is:
    tailscale up --authkey=<new-key> --hostname=airco-gpu
    ```
 
-5. **Network timing** — The pod uses `sleep 5` before `tailscale up` to let `tailscaled`
-   initialize. If the pod machine is slow, increase to `sleep 10`.
+5. **Daemon exited early** — if bootstrap log shows `failed to connect to local tailscaled`,
+   inspect `/tmp/tailscaled.log`. On community pods the daemon must run with
+   `--tun=userspace-networking`; kernel-TUN mode is not reliable there.
 
 ### VPS can't reach GPU pod services
 

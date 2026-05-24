@@ -201,7 +201,7 @@ without rebuilding the image. Container version wins over repo version.
 
 | Property | Value |
 |---|---|
-| **Base image** | `ubuntu:22.04` |
+| **Base image** | `ghcr.io/the-airco-v2/airco-runpod-bootstrap:latest` |
 | **GPU** | NVIDIA RTX 3090 (Community Cloud) |
 | **Tailscale hostname** | `airco-gpu` |
 | **Persistent volume** | `/workspace` (40 GB, persists across stop/start) |
@@ -214,20 +214,16 @@ without rebuilding the image. Container version wins over repo version.
 The pod is created once and reused. `RUNPOD_POD_ID` in `/app/airco/.env.production`
 on the VPS tells `gpu_controller.py` which pod to `resume` and `stop`.
 
-The pod's `dockerArgs` starts with `bash -c "..."` (ubuntu:22.04 has no ENTRYPOINT;
-RunPod uses dockerArgs as CMD override, so a shell wrapper is required for `&&` / `|`
-operators to work). The script:
+The pod is now created from the private bootstrap image
+`ghcr.io/the-airco-v2/airco-runpod-bootstrap:latest`. RunPod must be given
+`containerRegistryAuthId` at pod creation time so it can pull that private image.
+The image ENTRYPOINT handles bootstrap. On startup it:
 
-1. Installs `curl`, `git`
-2. Installs Tailscale, connects as `airco-gpu`
-3. Clones / pulls `The-Airco-V2` repo into `/workspace/The-Airco-V2`
-4. Runs `Backend/scripts/gpu_bootstrap.sh` which:
-   - Installs **Podman** + `podman-compose` (used instead of Docker — avoids
-     iptables/CAP_NET_ADMIN limitations on community pods)
-   - Installs NVIDIA Container Toolkit, generates CDI spec for GPU access
-   - Logs into GHCR, pulls GPU compose images
-   - Starts the full GPU stack via `podman-compose -f docker-compose.gpu.yml up -d`
-   - Runs `sleep infinity` to keep the container alive
+1. Starts `tailscaled` in `--tun=userspace-networking` mode and joins as `airco-gpu`
+2. Clones / pulls `The-Airco-V2` into `/workspace/The-Airco-V2`
+3. Writes `Backend/.env.production` from pod env vars
+4. Logs into GHCR and starts the GPU stack via `podman-compose -f docker-compose.gpu.yml up -d`
+5. Runs `sleep infinity` to keep the container alive
 
 **Why Podman instead of Docker:**
 RunPod community pods lack `CAP_NET_ADMIN` and privileged access. `dockerd`
@@ -263,11 +259,12 @@ via `AIRCO_HUB_HOST=100.103.80.105` (VPS Tailscale IP).
 **To create a new pod** (when the existing one is terminated / lost):
 
 ```bash
-# Run the deploy script (kept in antigravity scratch dir, secrets included):
-python3 /path/to/deploy_gpu_v3.py
-# It tries RTX 3090, 4090, A6000, A5000, 3080Ti, A4000 in order.
-# Copy the printed RUNPOD_POD_ID into /app/airco/.env.production, then restart the API:
-ssh root@72.61.239.69 'cd /app/airco && docker compose -f docker-compose.cpu.yml restart api'
+# Preferred local path:
+python3 Backend/scripts/create_runpod_pod.py --env-file Backend/.env.runpod
+# Preferred GHA path:
+#   .github/workflows/deploy-runpod-pod.yml
+# `AUTO_LINK_HOSTINGER=1` in Backend/.env.runpod updates /app/airco/.env.production
+# and restarts the API automatically after pod creation.
 ```
 
 **To SSH into the GPU pod:**
@@ -322,25 +319,31 @@ FastAPI api:8000 ──► Redis ──► streams ─────────�
 
 Both the Hostinger VPS and the RunPod pod authenticate to the same Tailscale
 network. The VPS runs persistent `tailscaled` via system package. The GPU pod
-runs `tailscaled --state=/workspace/tailscale.state` so the state persists on
-the `/workspace` volume across pod stop/start (same node identity, no re-auth).
+runs `tailscaled --state=/workspace/tailscale.state --socket=/tmp/tailscaled.sock --tun=userspace-networking`
+so the state persists on the `/workspace` volume across pod stop/start (same
+node identity, no re-auth) and avoids kernel-TUN issues on community pods.
 
 Auth key: `tskey-auth-kCi9o6yMF211CNTRL-...` — stored in
-`TAILSCALE_AUTHKEY` in `/app/airco/.env.production` (VPS) and hardcoded in
-`dockerArgs` of the RunPod pod definition.
+`TAILSCALE_AUTHKEY` in `/app/airco/.env.production` (VPS) and in
+`Backend/.env.runpod` / `RUNPOD_ENV_FILE` for pod creation.
 
 ### Image registry
 
 All service images: `ghcr.io/the-airco-v2/airco-*`
 
-CI and deploy live in `.github/workflows/build-images.yml`:
+CI and deploy are split across three workflows:
 
-- `push` to `main` runs path-filtered image builds and then the Hostinger deploy job.
-- `workflow_dispatch` also exists for manual redeploys.
-- Manual dispatch has `full_rebuild` (default `false`):
-  - `false` → only jobs whose path filters matched will rebuild; deploy still runs.
-  - `true` → forces rebuilding all images before deploy.
-- Tags: `:sha-<short>` (always) and `:latest` (on `main`).
+- `.github/workflows/build-images.yml`
+  - `push` to `main` runs path-filtered normal image builds and then the Hostinger deploy job
+  - `workflow_dispatch` also exists for manual CPU redeploys
+  - `full_rebuild=false` rebuilds only matching jobs; deploy still runs
+  - `full_rebuild=true` forces rebuilding all normal images before deploy
+- `.github/workflows/build-runpod-bootstrap.yml`
+  - manual-only rebuild/publish for `airco-runpod-bootstrap`
+- `.github/workflows/deploy-runpod-pod.yml`
+  - manual workflow that writes `Backend/.env.runpod` from `RUNPOD_ENV_FILE`
+  - optionally rebuilds the bootstrap image
+  - creates the GPU pod and links Hostinger automatically
 
 **Important deployment detail:** the Hostinger app directory `/app/airco/` is **not**
 a git checkout. The deploy workflow copies the host-managed files
@@ -383,5 +386,4 @@ CORS allowlist in `api/main.py` covers production hosts; extras via
 `Backend/.env.production.template` is the authoritative list. Copy to
 `/app/airco/.env.production` on the Hostinger VPS and fill `__SET_ME__`
 placeholders before bringing up the compose stack.
-
 

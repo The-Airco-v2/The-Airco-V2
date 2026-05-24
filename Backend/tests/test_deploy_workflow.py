@@ -30,3 +30,15 @@ def test_hostinger_deploy_runs_migrations_from_app_migrations_dir():
 
     assert "cd /app/migrations && alembic -c alembic.ini upgrade head" in workflow
     assert "exec -T api alembic upgrade head" not in workflow
+
+
+def test_runpod_deploy_workflow_uses_env_file_secret_and_script():
+    workflow = (
+        Path(__file__).resolve().parents[2] / ".github" / "workflows" / "deploy-runpod-pod.yml"
+    ).read_text()
+
+    assert "workflow_dispatch:" in workflow
+    assert "RUNPOD_ENV_FILE" in workflow
+    assert "Backend/.env.runpod" in workflow
+    assert "python3 Backend/scripts/create_runpod_pod.py --env-file Backend/.env.runpod" in workflow
+    assert "AUTO_LINK_HOSTINGER" in workflow

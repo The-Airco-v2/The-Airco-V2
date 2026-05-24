@@ -4,6 +4,7 @@ creds.txt
 Backend/.env
 Backend/.env.local
 Backend/.env.production
+Backend/.env.runpod
 Frontend/.env
 Frontend/.env.local
 Frontend/.env.production

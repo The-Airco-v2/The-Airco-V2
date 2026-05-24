@@ -15,26 +15,42 @@
 set -euo pipefail
 exec &> >(tee -a /workspace/bootstrap.log)
 
+TAILSCALE_SOCKET=/tmp/tailscaled.sock
+
 echo "================================================================"
 echo "  Airco RunPod Bootstrap — $(date -u)"
 echo "================================================================"
 
 # ── 1. Tailscale ──────────────────────────────────────────────────────────────
 echo "[1/5] Starting Tailscale..."
-tailscaled --state=/workspace/tailscale.state >/tmp/tailscaled.log 2>&1 &
+mkdir -p /var/run/tailscale
+tailscaled \
+    --state=/workspace/tailscale.state \
+    --socket="${TAILSCALE_SOCKET}" \
+    --tun=userspace-networking \
+    >/tmp/tailscaled.log 2>&1 &
+TAILSCALED_PID=$!
 sleep 8
+
+if ! kill -0 "${TAILSCALED_PID}" 2>/dev/null; then
+    echo "ERROR: tailscaled exited during bootstrap."
+    echo "--- /tmp/tailscaled.log ---"
+    cat /tmp/tailscaled.log || true
+    echo "---------------------------"
+    exit 1
+fi
 
 if [ -z "${TAILSCALE_AUTHKEY:-}" ]; then
     echo "ERROR: TAILSCALE_AUTHKEY not set. Cannot connect to tailnet."
     exit 1
 fi
 
-tailscale up \
+tailscale --socket="${TAILSCALE_SOCKET}" up \
     --authkey="${TAILSCALE_AUTHKEY}" \
     --accept-routes=false \
     --hostname=airco-gpu
 
-echo "TAILSCALE_OK — $(tailscale ip)"
+echo "TAILSCALE_OK — $(tailscale --socket="${TAILSCALE_SOCKET}" ip)"
 
 # ── 2. NVIDIA CDI spec ────────────────────────────────────────────────────────
 echo "[2/5] Generating NVIDIA CDI spec..."

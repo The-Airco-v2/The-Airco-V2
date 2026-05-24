@@ -14,26 +14,27 @@ Use this skill to manage the on-demand GPU pod that powers the Airco analytics p
 | **API Key** | `<RUNPOD_API_KEY>` |
 | **API Endpoint** | `https://api.runpod.io/graphql` |
 | **Current Pod** | See `RUNPOD_POD_ID` in `/app/airco/.env.production` on VPS |
-| **Base Image** | `ubuntu:22.04` |
+| **Base Image** | `ghcr.io/the-airco-v2/airco-runpod-bootstrap:latest` |
 | **Persistent Volume** | `/workspace` (40 GB) |
 | **Bootstrap Log** | `/workspace/bootstrap.log` on the pod |
 
 > [!IMPORTANT]
 > RunPod's API is behind Cloudflare WAF. Always set `User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36` or requests will get 403 blocked.
 
-## Critical: `dockerArgs` Shell Wrapping Rule
+## Current bootstrap model
 
-`ubuntu:22.04` has no ENTRYPOINT and `CMD=["/bin/bash"]`. RunPod uses `dockerArgs`
-as a CMD override. **You MUST wrap commands in `bash -c "..."` for shell operators
-(`&&`, `|`, `;`) to work.** Without this wrapper, the pod crashes immediately with
-`uptimeSeconds: 0`.
+The current pod does **not** use raw `dockerArgs` bootstrap anymore. It uses the
+private image `ghcr.io/the-airco-v2/airco-runpod-bootstrap:latest`, and pod
+creation must include `containerRegistryAuthId` so RunPod can pull that image.
 
-**Working pattern:**
-```
-bash -c "exec &>/workspace/bootstrap.log; set -x; apt-get install ... && ..."
-```
+The image ENTRYPOINT is `Backend/docker/bootstrap-entrypoint.sh` and it:
+- starts `tailscaled` with `--tun=userspace-networking`
+- joins Tailscale as `airco-gpu`
+- clones / pulls `/workspace/The-Airco-V2`
+- writes `Backend/.env.production`
+- runs the GPU stack with Podman
 
-**Never do:** `curl ... | sh && tailscale up ...` (no bash -c wrapper — shell operators won't work)
+Use the old `dockerArgs` guidance only when reading historical notes.
 
 ## Why Podman Instead of Docker
 
@@ -66,7 +67,7 @@ with urllib.request.urlopen(req) as r:
 ```
 
 ### `uptimeSeconds: 0` — container crashed immediately
-- Almost always means `dockerArgs` has no `bash -c "..."` wrapper, OR the machine has issues.
+- On the current bootstrap image, this usually means the image pull failed, the registry auth was missing, or the entrypoint exited very early.
 - Check if `machineId` is the same as previous failed pods — if so, that RunPod host is broken. Terminate and redeploy targeting a different GPU type.
 - Previously broken host: `ttulpyxydm59` (RTX 3090 community pool).
 
@@ -127,28 +128,19 @@ curl -s -X POST https://api.runpod.io/graphql \
 
 ## Creating a New Pod
 
-Use `Backend/scripts/gpu_bootstrap.sh` (in the git repo). The `dockerArgs` should be:
+Preferred paths:
 
-```python
-dockerArgs = (
-    'bash -c "'
-    'exec &>/workspace/bootstrap.log; set -x; '
-    'apt-get update -qq && apt-get install -y curl git && '
-    'curl -fsSL https://tailscale.com/install.sh | sh && '
-    'tailscaled --state=/workspace/tailscale.state >/tmp/tailscaled.log 2>&1 & '
-    'sleep 5 && '
-    'tailscale up --authkey=<TS_KEY> --accept-routes=false --hostname=airco-gpu && '
-    'if [ -d /workspace/The-Airco-V2/.git ]; then git -C /workspace/The-Airco-V2 pull; '
-    'else git clone https://nick2580:<GHCR_PAT>@github.com/The-Airco-v2/The-Airco-V2.git /workspace/The-Airco-V2; fi && '
-    'bash /workspace/The-Airco-V2/Backend/scripts/gpu_bootstrap.sh'
-    '"'
-)
-```
+1. Local:
+   `python3 Backend/scripts/create_runpod_pod.py --env-file Backend/.env.runpod`
+2. GitHub Actions:
+   `.github/workflows/deploy-runpod-pod.yml`
 
-The bootstrap repo path on the pod is `/workspace/The-Airco-V2`. Unlike the
-Hostinger CPU deploy, the GPU pod bootstrap **does** use a git checkout there
-because it reclones or pulls the repo on pod startup before running
-`Backend/scripts/gpu_bootstrap.sh`.
+Required inputs:
+- `Backend/.env.runpod` or `RUNPOD_ENV_FILE` secret
+- `RUNPOD_CONTAINER_REGISTRY_AUTH_ID` for the private GHCR bootstrap image
+- `AUTO_LINK_HOSTINGER=1` for automatic Hostinger cutover
+
+The bootstrap repo path on the pod is `/workspace/The-Airco-V2`.
 
 GPU image refresh behavior:
 - normal `push` to `main` rebuilds only GPU images whose paths changed
@@ -162,11 +154,9 @@ GPU type preference order (try in sequence, some may be unavailable):
 4. `NVIDIA RTX A4000`
 5. `NVIDIA GeForce RTX 3090` (avoid — prone to landing on broken host `ttulpyxydm59`)
 
-After creating a pod, update `RUNPOD_POD_ID` in `/app/airco/.env.production` on the VPS:
-```bash
-ssh root@72.61.239.69 'sed -i "s/^RUNPOD_POD_ID=.*/RUNPOD_POD_ID=<NEW_ID>/" /app/airco/.env.production'
-ssh root@72.61.239.69 'cd /app/airco && docker compose -f docker-compose.cpu.yml restart api'
-```
+When `AUTO_LINK_HOSTINGER=1` is set, `create_runpod_pod.py` updates
+`RUNPOD_POD_ID` in `/app/airco/.env.production` and restarts `airco-api`
+automatically over SSH.
 
 ## GPU Idle Loop (Backend Controller)
 
