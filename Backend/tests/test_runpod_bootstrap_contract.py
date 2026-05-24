@@ -10,3 +10,5 @@ def test_bootstrap_entrypoint_uses_userspace_tailscale():
     assert 'TAILSCALE_SOCKET=/tmp/tailscaled.sock' in script
     assert 'tailscale --socket="${TAILSCALE_SOCKET}" up' in script
     assert 'cat /tmp/tailscaled.log || true' in script
+    assert 'git clone --depth 1 --single-branch --branch main' in script
+    assert 'git -C "${REPO}" fetch --depth 1 origin main' in script

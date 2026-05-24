@@ -69,11 +69,13 @@ if [ -z "${GHCR_PAT:-}" ]; then
 fi
 
 if [ -d "${REPO}/.git" ]; then
-    echo "Repo exists, pulling..."
-    git -C "${REPO}" pull
+    echo "Repo exists, refreshing shallow checkout..."
+    git -C "${REPO}" fetch --depth 1 origin main
+    git -C "${REPO}" reset --hard origin/main
 else
-    echo "Cloning..."
-    git clone "https://nick2580:${GHCR_PAT}@github.com/The-Airco-v2/The-Airco-V2.git" "${REPO}"
+    echo "Cloning shallow checkout..."
+    git clone --depth 1 --single-branch --branch main \
+        "https://nick2580:${GHCR_PAT}@github.com/The-Airco-v2/The-Airco-V2.git" "${REPO}"
 fi
 
 # ── 4. Write .env.production ──────────────────────────────────────────────────
