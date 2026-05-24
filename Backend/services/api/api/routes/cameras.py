@@ -37,6 +37,9 @@ def _resolve_rtsp_url(rtsp_url: str) -> str:
         parsed = urlparse(rtsp_url)
         hostname = parsed.hostname
         if hostname and not hostname.replace(".", "").isdigit():
+            # Skip resolving for Dynamic DNS hosts so go2rtc can resolve and adapt to IP changes dynamically
+            if any(p in hostname.lower() for p in ("ddns", "dyndns", "no-ip", "duckdns")):
+                return rtsp_url
             ip = socket.gethostbyname(hostname)
             netloc = parsed.netloc.replace(hostname, ip, 1)
             return urlunparse(parsed._replace(netloc=netloc))
