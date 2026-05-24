@@ -188,8 +188,8 @@ That's roughly 60–90 minutes of my work for Phase 3, end-to-end, plus another 
 
 ## Notes & gotchas to remember
 
-- **`deploy/ghcr-and-compose` is not merged to `main` yet.** I drafted a PR title/body in the conversation; merge it via the GitHub UI when you're ready. Production should eventually track `main`.
-- **The `:latest` GHCR tag is built for both `main` and `deploy/*` branches.** Cleanup commit later: drop the `deploy/*` special-case once everything's on `main`.
-- **`bytecode .pyc files in services/savant-pipeline/__pycache__/`** are tracked in git from before .gitignore. They flap as modified during pytest runs. Cleanup: `git rm --cached` them in a small follow-up commit.
-- **Two `:test_deploy_env` failing tests** are pre-existing — `render_env` requires `SESSION_SECRET` in REQUIRED_SECRET_KEYS but the test fixture doesn't supply it. Pre-baseline, not introduced by Phase 1.
-- **Frontend `vitest` doesn't run in this sandbox** (`@rollup/rollup-linux-x64-gnu` missing). Pre-existing env issue. `tsc -b` works.
+* **Branch Merged:** The `deploy/ghcr-and-compose` code has been successfully merged into `main`, and production now tracks `main`.
+* **GHA Tags Simplified:** The `.github/workflows/build-images.yml` workflow has been cleaned up to only tag images as `:latest` when building from `main`.
+* **Pycache Cleanup:** Tracked `.pyc` byte-code files under `services/savant-pipeline/__pycache__/` have been successfully untracked (`git rm --cached`).
+* **Test Suite Green:** Pre-existing test failures (such as the missing `SESSION_SECRET` in `test_deploy_env.py` and local MinIO url hostname normalizations) have been fixed and all 347 tests are green.
+

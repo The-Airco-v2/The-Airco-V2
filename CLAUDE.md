@@ -333,8 +333,8 @@ Auth key: `tskey-auth-kCi9o6yMF211CNTRL-...` — stored in
 
 All service images: `ghcr.io/the-airco-v2/airco-*`
 
-CI: `.github/workflows/build-images.yml` builds on push to `main` or `deploy/**`.
-Tags: `:sha-<short>` (always) and `:latest` (on main/deploy branches).
+CI: `.github/workflows/build-images.yml` is run manually via `workflow_dispatch`.
+Tags: `:sha-<short>` (always) and `:latest` (when run on the `main` branch).
 
 GPU model artifacts baked into images:
 - `airco-triton` — ONNX + pre-built TRT plan files (rebuild per-GPU on first
