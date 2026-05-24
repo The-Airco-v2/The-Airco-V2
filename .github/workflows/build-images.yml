@@ -18,6 +18,12 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      full_rebuild:
+        description: Force rebuilding all images even when path filters do not match
+        required: false
+        default: false
+        type: boolean
 
 
 permissions:
@@ -78,7 +84,7 @@ jobs:
               - '.github/workflows/build-images.yml'
 
       - name: Free disk space
-        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.changed == 'true' || github.event.inputs.full_rebuild == 'true'
         # GitHub-hosted runners ship with ~14 GB free, which isn't
         # enough for the savant-deepstream base (~6 GB) plus build
         # layers. Pruning preinstalled .NET / Android / CodeQL /
@@ -96,11 +102,11 @@ jobs:
           df -h
 
       - name: Set up Docker Buildx
-        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.changed == 'true' || github.event.inputs.full_rebuild == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
-        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.changed == 'true' || github.event.inputs.full_rebuild == 'true'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -108,7 +114,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Compute tags
-        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.changed == 'true' || github.event.inputs.full_rebuild == 'true'
         id: tags
         run: |
           OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
@@ -121,7 +127,7 @@ jobs:
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
 
       - name: Build & push
-        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.changed == 'true' || github.event.inputs.full_rebuild == 'true'
         uses: docker/build-push-action@v5
         with:
           context: ${{ matrix.context }}
@@ -149,7 +155,7 @@ jobs:
               - '.github/workflows/build-images.yml'
 
       - name: Free disk space
-        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.changed == 'true' || github.event.inputs.full_rebuild == 'true'
         run: |
           set -eux
           sudo rm -rf /usr/share/dotnet || true
@@ -163,11 +169,11 @@ jobs:
           df -h
 
       - name: Set up Docker Buildx
-        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.changed == 'true' || github.event.inputs.full_rebuild == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
-        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.changed == 'true' || github.event.inputs.full_rebuild == 'true'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -175,7 +181,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Compute tags
-        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.changed == 'true' || github.event.inputs.full_rebuild == 'true'
         id: tags
         run: |
           OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
@@ -188,7 +194,7 @@ jobs:
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
 
       - name: Build & push
-        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.changed == 'true' || github.event.inputs.full_rebuild == 'true'
         uses: docker/build-push-action@v5
         with:
           context: Backend/services/savant-pipeline
@@ -215,7 +221,7 @@ jobs:
               - '.github/workflows/build-images.yml'
 
       - name: Free disk space
-        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.changed == 'true' || github.event.inputs.full_rebuild == 'true'
         run: |
           set -eux
           sudo rm -rf /usr/share/dotnet || true
@@ -229,11 +235,11 @@ jobs:
           df -h
 
       - name: Set up Docker Buildx
-        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.changed == 'true' || github.event.inputs.full_rebuild == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
-        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.changed == 'true' || github.event.inputs.full_rebuild == 'true'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -241,7 +247,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Compute tags
-        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.changed == 'true' || github.event.inputs.full_rebuild == 'true'
         id: tags
         run: |
           OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
@@ -254,7 +260,7 @@ jobs:
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
 
       - name: Build & push
-        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.changed == 'true' || github.event.inputs.full_rebuild == 'true'
         uses: docker/build-push-action@v5
         with:
           context: Backend/services/triton
@@ -290,7 +296,7 @@ jobs:
               - '.github/workflows/build-images.yml'
 
       - name: Free disk space
-        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.changed == 'true' || github.event.inputs.full_rebuild == 'true'
         run: |
           set -eux
           sudo rm -rf /usr/share/dotnet || true
@@ -304,7 +310,7 @@ jobs:
           df -h
 
       - name: Vendor Ultimate-Tracker weights
-        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.changed == 'true' || github.event.inputs.full_rebuild == 'true'
         run: |
           set -euxo pipefail
           mkdir -p Backend/services/ultimate-adapter/vendor/ultimate-poc
@@ -317,11 +323,11 @@ jobs:
           ls -la Backend/services/ultimate-adapter/vendor/ultimate-poc/
 
       - name: Set up Docker Buildx
-        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.changed == 'true' || github.event.inputs.full_rebuild == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
-        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.changed == 'true' || github.event.inputs.full_rebuild == 'true'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -329,7 +335,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Compute tags
-        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.changed == 'true' || github.event.inputs.full_rebuild == 'true'
         id: tags
         run: |
           OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
@@ -342,7 +348,7 @@ jobs:
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
 
       - name: Build & push
-        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.changed == 'true' || github.event.inputs.full_rebuild == 'true'
         uses: docker/build-push-action@v5
         with:
           context: Backend
@@ -372,6 +378,16 @@ jobs:
 
       - name: Deploy via SSH
         if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: 72.61.239.69
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: Backend/docker-compose.cpu.yml,Backend/services/api/api/gpu_controller.py,Backend/services/api/api/runpod_client.py,Backend/services/api/api/routes/sessions.py
+          target: /app/airco/.gha-deploy
+
+      - name: Restart services on VPS
+        if: steps.filter.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: 72.61.239.69
@@ -379,19 +395,23 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             set -e
+            echo "Staging deployment files on VPS..."
+            cp /app/airco/.gha-deploy/Backend/docker-compose.cpu.yml /app/airco/docker-compose.cpu.yml
+            cp /app/airco/.gha-deploy/Backend/services/api/api/gpu_controller.py /app/airco/gpu_controller.py
+            cp /app/airco/.gha-deploy/Backend/services/api/api/runpod_client.py /app/airco/runpod_client.py
+            mkdir -p /app/airco/routes
+            cp /app/airco/.gha-deploy/Backend/services/api/api/routes/sessions.py /app/airco/routes/sessions.py
+
             echo "Navigating to app directory..."
             cd /app/airco
-            
-            echo "Pulling latest code changes from Git..."
-            git pull origin main
-            
+
             echo "Pulling latest Docker images from GHCR..."
             docker compose -f docker-compose.cpu.yml --env-file .env.production pull
-            
+
             echo "Recreating containers with updated images..."
             docker compose -f docker-compose.cpu.yml --env-file .env.production up -d
-            
+
             echo "Running database migrations..."
             docker compose -f docker-compose.cpu.yml --env-file .env.production exec -T api alembic upgrade head
-            
+
             echo "Deployment completed successfully!"
