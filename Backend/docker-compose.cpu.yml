@@ -158,6 +158,10 @@ services:
       GPU_BOOT_TIMEOUT_SECONDS: ${GPU_BOOT_TIMEOUT_SECONDS:-180}
       GPU_HEALTH_TARGET: ${GPU_HEALTH_TARGET:-}
       CORS_EXTRA_ORIGINS: ${CORS_EXTRA_ORIGINS:-}
+    volumes:
+      - ./gpu_controller.py:/app/api/gpu_controller.py
+      - ./runpod_client.py:/app/api/runpod_client.py
+      - ./routes/sessions.py:/app/api/routes/sessions.py
     depends_on:
       timescaledb:
         condition: service_healthy
