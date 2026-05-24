@@ -57,9 +57,16 @@ def test_bootstrap_rtsp_skips_active_session_alias():
 def test_resolve_rtsp_url_rewrites_hostname_to_ip(monkeypatch):
     monkeypatch.setattr("session_control.main.socket.gethostbyname", lambda host: "10.0.0.5")
 
-    resolved = _resolve_rtsp_url("rtsp://user:pass@camera.example.com:8554/Streaming/Channels/101")
+    # Local hostnames (e.g. .local or no dot) SHOULD be resolved
+    resolved_local_suffix = _resolve_rtsp_url("rtsp://user:pass@camera.local:8554/Streaming/Channels/101")
+    assert resolved_local_suffix == "rtsp://user:pass@10.0.0.5:8554/Streaming/Channels/101"
 
-    assert resolved == "rtsp://user:pass@10.0.0.5:8554/Streaming/Channels/101"
+    resolved_no_dot = _resolve_rtsp_url("rtsp://user:pass@mycamera:8554/Streaming/Channels/101")
+    assert resolved_no_dot == "rtsp://user:pass@10.0.0.5:8554/Streaming/Channels/101"
+
+    # Public hostnames/DDNS domains SHOULD NOT be resolved
+    resolved_public = _resolve_rtsp_url("rtsp://user:pass@camera.example.com:8554/Streaming/Channels/101")
+    assert resolved_public == "rtsp://user:pass@camera.example.com:8554/Streaming/Channels/101"
 
 
 @pytest.mark.asyncio

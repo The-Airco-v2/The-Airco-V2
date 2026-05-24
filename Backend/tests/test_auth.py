@@ -286,7 +286,10 @@ def test_session_cookie_rejects_tampering(monkeypatch):
     monkeypatch.setattr(settings, "session_secret", "test-session-secret")
 
     cookie_value = build_session_cookie(_session_payload())
-    tampered = f"{cookie_value[:-1]}x"
+    payload_part, signature_part = cookie_value.split(".", 1)
+    # Tamper the first character of the signature portion to guarantee a signature mismatch
+    tampered_signature = ("x" if signature_part[0] != "x" else "y") + signature_part[1:]
+    tampered = f"{payload_part}.{tampered_signature}"
 
     assert decode_session_cookie(tampered) is None
 

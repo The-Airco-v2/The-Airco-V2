@@ -32,14 +32,28 @@ def _stream_name(camera_name: str) -> str:
 
 
 def _resolve_rtsp_url(rtsp_url: str) -> str:
-    """Resolve hostname in RTSP URL to IP so go2rtc skips DNS lookup."""
+    """Resolve hostname in RTSP URL to IP so go2rtc skips DNS lookup for local/mDNS hosts.
+    
+    Public hostnames and Dynamic DNS domains are NOT resolved so go2rtc can handle
+    DNS lookup and adapt to dynamic IP changes natively.
+    """
     try:
         parsed = urlparse(rtsp_url)
         hostname = parsed.hostname
         if hostname and not hostname.replace(".", "").isdigit():
-            # Skip resolving for Dynamic DNS hosts so go2rtc can resolve and adapt to IP changes dynamically
-            if any(p in hostname.lower() for p in ("ddns", "dyndns", "no-ip", "duckdns")):
+            # Only resolve local/mDNS domains (e.g. ending in .local, .lan, or single-label hosts)
+            # which Docker containers might not resolve natively.
+            hostname_lower = hostname.lower()
+            is_local = (
+                "." not in hostname_lower
+                or hostname_lower.endswith(".local")
+                or hostname_lower.endswith(".lan")
+                or hostname_lower.endswith(".home")
+                or hostname_lower.endswith(".internal")
+            )
+            if not is_local:
                 return rtsp_url
+
             ip = socket.gethostbyname(hostname)
             netloc = parsed.netloc.replace(hostname, ip, 1)
             return urlunparse(parsed._replace(netloc=netloc))
