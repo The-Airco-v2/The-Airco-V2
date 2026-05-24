@@ -30,6 +30,7 @@ def test_list_alerts_returns_canonical_payload_shape(api_client, db_session_mock
                     status="active",
                     acknowledged_at=None,
                     created_at=created_at,
+                    evidence_url=None,
                 )
             ]
         ),
@@ -50,6 +51,8 @@ def test_list_alerts_returns_canonical_payload_shape(api_client, db_session_mock
             "message": "Phone detected on floor",
             "acknowledged": False,
             "created_at": "2026-03-29T13:00:00Z",
+            "evidence_url": None,
+            "snapshot_url": None,
         }
     ]
 
@@ -75,6 +78,7 @@ def test_list_alerts_supports_limit_query_param(api_client, db_session_mock):
                     status="active",
                     acknowledged_at=None,
                     created_at=newer,
+                    evidence_url=None,
                 ),
                 SimpleNamespace(
                     id=second_alert_id,
@@ -87,6 +91,7 @@ def test_list_alerts_supports_limit_query_param(api_client, db_session_mock):
                     status="active",
                     acknowledged_at=None,
                     created_at=older,
+                    evidence_url=None,
                 ),
             ]
         )
@@ -122,6 +127,8 @@ async def test_acknowledged_alert_helper_returns_canonical_payload_shape(db_sess
             message="Phone detected on floor",
             acknowledged_at=acknowledged_at,
             created_at=created_at,
+            session_person_id=None,
+            evidence_url=None,
         ),
     )
 
@@ -135,6 +142,8 @@ async def test_acknowledged_alert_helper_returns_canonical_payload_shape(db_sess
         "message": "Phone detected on floor",
         "acknowledged": True,
         "created_at": "2026-03-29T13:00:00Z",
+        "evidence_url": None,
+        "snapshot_url": None,
     }
 
 

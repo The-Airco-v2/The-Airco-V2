@@ -151,58 +151,225 @@ Realtime hooks (`useLive*`) subscribe to Centrifugo channels named per `resolve_
 
 ## Deployment (production)
 
-The production stack splits across three environments:
+The production stack is split across three environments. Everything is wired over
+Tailscale; no VPN or bastion is needed between the VPS and the GPU pod.
 
-- **Hetzner Cloud Singapore (CCX13, always on)** — runs the CPU half: Postgres, Redis, MinIO, Centrifugo, FastAPI, go2rtc, mediamtx. Configured via `Backend/docker-compose.cpu.yml` + `.env.production`.
-- **RunPod GPU pod (Community Cloud RTX 3090, on demand)** — runs the GPU half: Triton, savant-pipeline, savant-feeder, identity-consumer, analytics-consumer, snapshot-consumer, session-control, ws-publisher, ultimate-adapter. Configured via `Backend/docker-compose.gpu.yml`. The API resumes/stops the pod on session_start/session_stop.
-- **Cloudflare Pages** — hosts the Vite-built frontend. `Frontend/.env.production.example` documents the three required `VITE_*` URLs.
+### 1 — Hostinger KVM 2 VPS (always-on CPU stack)
+
+| Property | Value |
+|---|---|
+| **Public IP** | `72.61.239.69` |
+| **Tailscale IP** | `100.103.80.105` |
+| **Tailscale hostname** | `airco-hub` (registered as `srv1696728` in console) |
+| **SSH** | `ssh -i ~/.ssh/id_ed25519 root@72.61.239.69` |
+| **App files** | `/app/airco/` |
+| **Env file** | `/app/airco/.env.production` |
+
+**Services running** (via `docker-compose.cpu.yml` + `docker-compose.proxy.yml`):
+
+- TimescaleDB (Postgres + pgvector) — port 5432
+- Redis — port 6379
+- MinIO — port 9000
+- Centrifugo — port 8088
+- FastAPI gateway (`airco-api`) — port 8000
+- go2rtc — RTSP relay on port 8554, HTTP on port 1984
+- mediamtx — port 8890
+- Caddy (TLS terminator) — ports 80 / 443
+- analytics-consumer, snapshot-consumer, session-control, ws-publisher
+
+**Useful VPS commands:**
+
+```bash
+# Check all services
+ssh root@72.61.239.69 'cd /app/airco && docker compose -f docker-compose.cpu.yml -f docker-compose.proxy.yml ps'
+
+# Tail API logs
+ssh root@72.61.239.69 'cd /app/airco && docker compose -f docker-compose.cpu.yml logs -f api'
+
+# Restart a service
+ssh root@72.61.239.69 'cd /app/airco && docker compose -f docker-compose.cpu.yml restart api'
+
+# Check Tailscale peers (should show airco-gpu when GPU pod is running)
+ssh root@72.61.239.69 'tailscale status'
+```
+
+**Volume-mount hotfix:** `gpu_controller.py` is bind-mounted from
+`/app/airco/gpu_controller.py` into the API container so it can be updated
+without rebuilding the image. Container version wins over repo version.
+
+### 2 — RunPod GPU pod (on-demand, Community Cloud)
+
+| Property | Value |
+|---|---|
+| **Base image** | `ubuntu:22.04` |
+| **GPU** | NVIDIA RTX 3090 (Community Cloud) |
+| **Tailscale hostname** | `airco-gpu` |
+| **Persistent volume** | `/workspace` (40 GB, persists across stop/start) |
+| **Container disk** | 40 GB |
+| **Env file** | `/workspace/The-Airco-V2/Backend/.env.production` (written from pod env vars on startup) |
+| **Bootstrap log** | `/workspace/bootstrap.log` |
+
+**How the pod is provisioned:**
+
+The pod is created once and reused. `RUNPOD_POD_ID` in `/app/airco/.env.production`
+on the VPS tells `gpu_controller.py` which pod to `resume` and `stop`.
+
+The pod's `dockerArgs` starts with `bash -c "..."` (ubuntu:22.04 has no ENTRYPOINT;
+RunPod uses dockerArgs as CMD override, so a shell wrapper is required for `&&` / `|`
+operators to work). The script:
+
+1. Installs `curl`, `git`
+2. Installs Tailscale, connects as `airco-gpu`
+3. Clones / pulls `The-Airco-V2` repo into `/workspace/The-Airco-V2`
+4. Runs `Backend/scripts/gpu_bootstrap.sh` which:
+   - Installs **Podman** + `podman-compose` (used instead of Docker — avoids
+     iptables/CAP_NET_ADMIN limitations on community pods)
+   - Installs NVIDIA Container Toolkit, generates CDI spec for GPU access
+   - Logs into GHCR, pulls GPU compose images
+   - Starts the full GPU stack via `podman-compose -f docker-compose.gpu.yml up -d`
+   - Runs `sleep infinity` to keep the container alive
+
+**Why Podman instead of Docker:**
+RunPod community pods lack `CAP_NET_ADMIN` and privileged access. `dockerd`
+requires these for bridge networks and iptables. Podman uses `slirp4netns` for
+networking and CDI for GPU access — neither requires elevated capabilities.
+
+**Services running on GPU pod** (via `docker-compose.gpu.yml`):
+
+- `triton` — NVIDIA Triton Inference Server (ports 8001/8002)
+- `savant-pipeline` — DeepStream GPU detector + tracker
+- `savant-feeder` — RTSP feed ingestion
+- `identity-consumer` — Face/body ReID pipeline
+- `analytics-consumer` — Alerts and scoring
+- `snapshot-consumer` — Evidence frame writer to MinIO
+- `session-control` — go2rtc stream routing bridge
+- `ws-publisher` — Redis Streams → Centrifugo fan-out
+- `ultimate-adapter` — Alternate YOLO+OSNet ReID path
+
+All GPU services reach Postgres, Redis, MinIO, Centrifugo on the Hostinger VPS
+via `AIRCO_HUB_HOST=100.103.80.105` (VPS Tailscale IP).
+
+**GPU lifecycle (session-triggered):**
+
+- Session `start` → `gpu_controller.py:ensure_running()` calls `podResume` GraphQL
+  mutation, then polls `GPU_HEALTH_TARGET` URL until Triton reports ready.
+- Session `stop` + idle timeout → `gpu_controller.py:release_if_idle()` calls
+  `podStop` mutation (pod parked, volume retained, billing stops).
+- Controller is a no-op when `RUNPOD_API_KEY` / `RUNPOD_POD_ID` are not set.
+- `GPU_IDLE_TIMEOUT_SECONDS` (default 900) — seconds of zero active sessions before auto-stop.
+- `GPU_BOOT_TIMEOUT_SECONDS` (default 180) — max seconds to wait for pod to become healthy.
+- `GPU_HEALTH_TARGET` — HTTP URL polled to verify GPU pod is ready (e.g. Triton readiness endpoint).
+
+**To create a new pod** (when the existing one is terminated / lost):
+
+```bash
+# Run the deploy script (kept in antigravity scratch dir, secrets included):
+python3 /path/to/deploy_gpu_v3.py
+# It tries RTX 3090, 4090, A6000, A5000, 3080Ti, A4000 in order.
+# Copy the printed RUNPOD_POD_ID into /app/airco/.env.production, then restart the API:
+ssh root@72.61.239.69 'cd /app/airco && docker compose -f docker-compose.cpu.yml restart api'
+```
+
+**To SSH into the GPU pod:**
+
+```bash
+# Via VPS (always works while Tailscale is up):
+ssh -i ~/.ssh/id_ed25519 root@72.61.239.69 \
+  "ssh -o StrictHostKeyChecking=no root@<airco-gpu-tailscale-ip>"
+# Get the Tailscale IP from: ssh root@72.61.239.69 'tailscale status'
+# Check bootstrap progress:  cat /workspace/bootstrap.log
+# Check containers:          podman ps
+# Check GPU:                 nvidia-smi
+```
+
+### 3 — Cloudflare Pages (frontend SPA)
+
+| Property | Value |
+|---|---|
+| **Production URL** | `https://the-airco-v2.pages.dev` |
+| **Custom domain** | `app.the-airco.net` (when DNS configured) |
+| **Build root** | `Frontend/` |
+| **Build command** | `npm run build` |
+| **Output dir** | `dist` |
+
+Env vars set in Cloudflare Pages dashboard:
+- `VITE_API_URL=https://api.the-airco.net`
+- `VITE_WS_URL=wss://api.the-airco.net/centrifugo/connection/websocket`
+- `VITE_GO2RTC_URL=https://media.the-airco.net`
+
+`Frontend/public/_redirects` — SPA fallback.
+`Frontend/public/_headers` — security headers + asset cache.
 
 ### Cross-environment networking
 
-Hetzner and RunPod talk via Tailscale (free tier). The Hetzner box advertises itself on the tailnet as `airco-hub`; GPU compose reads `AIRCO_HUB_HOST` to find Postgres / Redis / MinIO / Centrifugo / go2rtc.
+```
+Browser (Cloudflare Pages)
+    │ HTTPS/WSS
+    ▼
+Caddy (Hostinger :443)
+    │ reverse-proxy
+    ▼
+FastAPI api:8000 ──► Redis ──► streams ──────────────────┐
+                     Centrifugo:8088                      │ Tailscale VPN
+                                                          ▼
+                                               RunPod GPU pod (airco-gpu)
+                                               podman-compose GPU services
+                                               consuming Redis Streams,
+                                               writing to Postgres/MinIO
+```
+
+### Tailscale configuration
+
+Both the Hostinger VPS and the RunPod pod authenticate to the same Tailscale
+network. The VPS runs persistent `tailscaled` via system package. The GPU pod
+runs `tailscaled --state=/workspace/tailscale.state` so the state persists on
+the `/workspace` volume across pod stop/start (same node identity, no re-auth).
+
+Auth key: `tskey-auth-kCi9o6yMF211CNTRL-...` — stored in
+`TAILSCALE_AUTHKEY` in `/app/airco/.env.production` (VPS) and hardcoded in
+`dockerArgs` of the RunPod pod definition.
 
 ### Image registry
 
-All service images live in `ghcr.io/dscyrus07-dev/airco-*`. `.github/workflows/build-images.yml` builds and pushes on every push to `main` or `deploy/**`. Tags: `:sha-<short>` (always) and `:latest` (on main/deploy branches).
+All service images: `ghcr.io/the-airco-v2/airco-*`
 
-GPU model artifacts are baked into the images:
-- `airco-triton` includes ONNX + any pre-built `.plan` engines. TRT engines rebuild per-GPU on first start and persist on RunPod's container filesystem across stop/start.
-- `airco-savant-pipeline` includes the YOLO and SCRFD ONNX/PT under `/models/`.
-- `airco-ultimate-adapter` includes the Ultimate-Tracker weights under `/ultimate-poc/` (CI vendors them from the sibling `Ultimate-Tracker/` directory before docker build).
+CI: `.github/workflows/build-images.yml` builds on push to `main` or `deploy/**`.
+Tags: `:sha-<short>` (always) and `:latest` (on main/deploy branches).
 
-### GPU boot controller
-
-`services/api/api/runpod_client.py` + `services/api/api/gpu_controller.py` resume / stop the RunPod pod via the RunPod GraphQL API. `start_session` returns 202 with `status: "starting"` when the controller is enabled, then a BackgroundTask boots the pod, polls the configured `GPU_HEALTH_TARGET` URL, and publishes `session_start` to `airco:control`. A startup task (`start_gpu_idle_loop` in `api/main.py`) stops the pod after `GPU_IDLE_TIMEOUT_SECONDS` of zero active sessions. The controller is a no-op when `RUNPOD_API_KEY` / `RUNPOD_POD_ID` aren't set, so local dev works unchanged.
+GPU model artifacts baked into images:
+- `airco-triton` — ONNX + pre-built TRT plan files (rebuild per-GPU on first
+  start, cached in `/workspace` across pod stop/start)
+- `airco-savant-pipeline` — YOLO and SCRFD models under `/models/`
+- `airco-ultimate-adapter` — Ultimate-Tracker weights under `/ultimate-poc/`
 
 ### Reverse proxy + TLS
 
-`deploy/Caddyfile` + `docker-compose.proxy.yml` add Caddy as a TLS terminator on the Hetzner host. Routes:
+`deploy/Caddyfile` + `docker-compose.proxy.yml` — Caddy as TLS terminator:
+
 - `api.the-airco.net/*` → `api:8000`
 - `api.the-airco.net/centrifugo/*` → `centrifugo:8088` (WebSocket)
 - `api.the-airco.net/minio/*` → `minio:9000`
 - `media.the-airco.net/*` → `go2rtc:1984`
 
-Caddy auto-renews via Let's Encrypt. DNS must point at the Hetzner public IP before TLS issuance can succeed.
+Caddy auto-renews via Let's Encrypt. DNS A records must point to `72.61.239.69`.
 
 ### Cross-domain auth
 
-Because the frontend lives on `app.the-airco.net` (Cloudflare) and the API on `api.the-airco.net` (Hetzner), the session cookie must be parent-domain-scoped. Set:
+Frontend on `app.the-airco.net` (Cloudflare), API on `api.the-airco.net`
+(Hostinger). Session cookie must be parent-domain-scoped:
+
 - `SESSION_COOKIE_DOMAIN=.the-airco.net`
 - `SESSION_SECURE_COOKIE=true`
 - `SESSION_SAME_SITE=none`
 
-The CORS allowlist in `api/main.py` includes the production hosts by default; additional origins go in `CORS_EXTRA_ORIGINS` (comma-separated).
-
-### Cloudflare Pages build settings
-
-When connecting the repo to Cloudflare Pages:
-- **Root directory**: `Frontend`
-- **Build command**: `npm run build`
-- **Output directory**: `dist`
-- **Environment variables**: from `Frontend/.env.production.example` (`VITE_API_URL`, `VITE_WS_URL`, `VITE_GO2RTC_URL`)
-
-`Frontend/public/_redirects` provides the SPA fallback; `Frontend/public/_headers` sets security headers and asset-cache hints.
+CORS allowlist in `api/main.py` covers production hosts; extras via
+`CORS_EXTRA_ORIGINS` (comma-separated).
 
 ### Production env file
 
-`Backend/.env.production.template` is the authoritative list of required vars. Always copy to `.env.production` on the Hetzner host and fill placeholders (`__SET_ME__`) before bringing up the compose stack.
+`Backend/.env.production.template` is the authoritative list. Copy to
+`/app/airco/.env.production` on the Hostinger VPS and fill `__SET_ME__`
+placeholders before bringing up the compose stack.
+
+
+

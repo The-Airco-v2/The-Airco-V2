@@ -1,4 +1,4 @@
-# Production CPU compose — Hetzner Singapore (always on).
+# Production CPU compose — Hostinger Singapore (always on).
 #
 # Runs the durable-state services: Postgres, Redis, MinIO, Centrifugo,
 # the FastAPI API, plus RTSP relays (go2rtc, mediamtx). GPU services
@@ -143,7 +143,7 @@ services:
       MTX_PROTOCOLS: tcp
 
   api:
-    image: ${IMAGE_REGISTRY:-ghcr.io/dscyrus07-dev}/airco-api:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REGISTRY:-ghcr.io/the-airco-v2}/airco-api:${IMAGE_TAG:-latest}
     restart: unless-stopped
     pull_policy: always
     ports:
@@ -157,6 +157,7 @@ services:
       GPU_IDLE_TIMEOUT_SECONDS: ${GPU_IDLE_TIMEOUT_SECONDS:-900}
       GPU_BOOT_TIMEOUT_SECONDS: ${GPU_BOOT_TIMEOUT_SECONDS:-180}
       GPU_HEALTH_TARGET: ${GPU_HEALTH_TARGET:-}
+      CORS_EXTRA_ORIGINS: ${CORS_EXTRA_ORIGINS:-}
     depends_on:
       timescaledb:
         condition: service_healthy

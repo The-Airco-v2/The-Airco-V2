@@ -84,7 +84,7 @@ class GpuController:
                 if settings.gpu_health_target:
                     await self._wait_for_health(settings.gpu_health_target)
                 return
-            if pod.state in (PodState.TERMINATED, PodState.EXITED):
+            if pod.state == PodState.TERMINATED:
                 raise RunPodError(
                     f"GPU pod {settings.runpod_pod_id} is in non-resumable state {pod.state.value}"
                 )

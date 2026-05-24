@@ -1,4 +1,4 @@
-# Caddy reverse proxy add-on for the Hetzner CPU stack.
+# Caddy reverse proxy add-on for the Hostinger CPU stack.
 #
 # Compose chains with docker-compose.cpu.yml so they share the same
 # default network (auto-named "<project>_default"). Bring up together:

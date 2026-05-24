@@ -12,7 +12,7 @@ from typing import Literal
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from airco import redis_streams  # late lookup keeps test patches simple
@@ -321,6 +321,7 @@ async def _mark_session_failed(
 @router.post("/{session_id}/stop")
 async def stop_session(
     session_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
     auth: AuthState = Depends(require_admin),
     db: AsyncSession = Depends(get_session),
 ):
@@ -337,7 +338,49 @@ async def stop_session(
         "event_type": "session_stop",
         "session_id": str(session_id),
     })
+    background_tasks.add_task(_maybe_stop_gpu_after_session)
     return {"status": "stopped"}
+
+
+async def _maybe_stop_gpu_after_session() -> None:
+    """Stop the GPU pod after a 60s grace period if no sessions remain active.
+
+    The grace period lets any in-flight analytics / snapshot writes finish
+    cleanly before the pod is killed. If another session starts within the
+    grace window the stop is skipped.
+    """
+    GPU_STOP_GRACE_SECONDS = 60
+
+    try:
+        await asyncio.sleep(GPU_STOP_GRACE_SECONDS)
+
+        # Re-check after the grace period — a new session may have started.
+        async with async_session() as db:
+            result = await db.execute(
+                select(func.count(Session.id)).where(
+                    Session.status.in_(("running", "starting"))
+                )
+            )
+            active_count = result.scalar_one() or 0
+
+        if active_count > 0:
+            logger.info(
+                "GPU stop skipped — %d session(s) became active during grace period",
+                active_count,
+            )
+            return
+
+        controller = get_gpu_controller()
+        if controller.enabled:
+            logger.info(
+                "No active sessions after %ss grace — stopping GPU pod",
+                GPU_STOP_GRACE_SECONDS,
+            )
+            await controller.stop()
+    except Exception:
+        logger.exception("_maybe_stop_gpu_after_session failed")
+
+
 
 
 @router.post("/{session_id}/pause")

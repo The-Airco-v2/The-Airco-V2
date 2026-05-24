@@ -1,0 +1,60 @@
+# Dockerfile.runpod-bootstrap
+# Minimal bootstrap image for RunPod Community Cloud.
+# This is deployed as the outer "host" container on RunPod.
+# It connects to Tailscale, clones the repo, then runs the full GPU stack via Podman.
+#
+# Build & push:
+#   docker build -f Backend/docker/Dockerfile.runpod-bootstrap -t ghcr.io/the-airco-v2/airco-runpod-bootstrap:latest Backend/docker/
+#   docker push ghcr.io/the-airco-v2/airco-runpod-bootstrap:latest
+#
+# RunPod deployment:
+#   imageName: ghcr.io/the-airco-v2/airco-runpod-bootstrap:latest
+#   dockerArgs: (leave empty — ENTRYPOINT runs the bootstrap)
+#   env: TAILSCALE_AUTHKEY, GHCR_PAT, + all Postgres/MinIO/Centrifugo vars
+
+FROM ubuntu:22.04
+
+# Avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install base dependencies
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends \
+        curl \
+        ca-certificates \
+        git \
+        gnupg \
+        lsb-release \
+        iptables \
+        python3 \
+        python3-pip && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Tailscale
+RUN curl -fsSL https://tailscale.com/install.sh | sh
+
+# Install Podman
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends podman && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install podman-compose
+RUN pip3 install --quiet podman-compose
+
+# Install NVIDIA Container Toolkit
+RUN curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+      | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg && \
+    curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+      | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+      > /etc/apt/sources.list.d/nvidia-container-toolkit.list && \
+    apt-get update -qq && \
+    apt-get install -y nvidia-container-toolkit && \
+    rm -rf /var/lib/apt/lists/*
+
+# Bootstrap entrypoint script
+COPY bootstrap-entrypoint.sh /bootstrap-entrypoint.sh
+RUN chmod +x /bootstrap-entrypoint.sh
+
+WORKDIR /workspace
+
+ENTRYPOINT ["/bootstrap-entrypoint.sh"]
