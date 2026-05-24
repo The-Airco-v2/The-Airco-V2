@@ -333,8 +333,21 @@ Auth key: `tskey-auth-kCi9o6yMF211CNTRL-...` — stored in
 
 All service images: `ghcr.io/the-airco-v2/airco-*`
 
-CI: `.github/workflows/build-images.yml` is run manually via `workflow_dispatch`.
-Tags: `:sha-<short>` (always) and `:latest` (when run on the `main` branch).
+CI and deploy live in `.github/workflows/build-images.yml`:
+
+- `push` to `main` runs path-filtered image builds and then the Hostinger deploy job.
+- `workflow_dispatch` also exists for manual redeploys.
+- Manual dispatch has `full_rebuild` (default `false`):
+  - `false` → only jobs whose path filters matched will rebuild; deploy still runs.
+  - `true` → forces rebuilding all images before deploy.
+- Tags: `:sha-<short>` (always) and `:latest` (on `main`).
+
+**Important deployment detail:** the Hostinger app directory `/app/airco/` is **not**
+a git checkout. The deploy workflow copies the host-managed files
+(`docker-compose.cpu.yml`, `gpu_controller.py`, `runpod_client.py`,
+`routes/sessions.py`) to `/app/airco/.gha-deploy/` via SCP, then stages them
+into `/app/airco/` before running `docker compose pull`, `up -d`, and Alembic.
+Do not assume `git pull` works on the VPS CPU stack.
 
 GPU model artifacts baked into images:
 - `airco-triton` — ONNX + pre-built TRT plan files (rebuild per-GPU on first
@@ -370,6 +383,5 @@ CORS allowlist in `api/main.py` covers production hosts; extras via
 `Backend/.env.production.template` is the authoritative list. Copy to
 `/app/airco/.env.production` on the Hostinger VPS and fill `__SET_ME__`
 placeholders before bringing up the compose stack.
-
 
 

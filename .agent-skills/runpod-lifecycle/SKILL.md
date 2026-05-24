@@ -145,6 +145,16 @@ dockerArgs = (
 )
 ```
 
+The bootstrap repo path on the pod is `/workspace/The-Airco-V2`. Unlike the
+Hostinger CPU deploy, the GPU pod bootstrap **does** use a git checkout there
+because it reclones or pulls the repo on pod startup before running
+`Backend/scripts/gpu_bootstrap.sh`.
+
+GPU image refresh behavior:
+- normal `push` to `main` rebuilds only GPU images whose paths changed
+- manual `workflow_dispatch` with `full_rebuild=false` keeps unchanged GPU images as-is
+- manual `workflow_dispatch` with `full_rebuild=true` forces rebuilding all GPU images
+
 GPU type preference order (try in sequence, some may be unavailable):
 1. `NVIDIA RTX A6000` → machine `hu32823wq6hy` (known working)
 2. `NVIDIA RTX A5000`

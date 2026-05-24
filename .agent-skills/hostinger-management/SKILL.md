@@ -35,6 +35,11 @@ All compose files live at `/app/airco/`. The stack is split into:
 - `docker-compose.cpu.yml` — application services (API, Redis, Postgres, MinIO, Centrifugo, go2rtc, mediamtx, consumers)
 - `docker-compose.proxy.yml` — Caddy reverse proxy / TLS terminator
 
+> [!IMPORTANT]
+> `/app/airco/` is a deployed app directory, not a git checkout. The GitHub Actions
+> deploy job stages files there with SCP and then runs `docker compose`. Do not
+> assume `git pull` is part of the Hostinger deploy flow.
+
 ```bash
 # Check status of all services
 ssh root@72.61.239.69 'cd /app/airco && docker compose -f docker-compose.cpu.yml -f docker-compose.proxy.yml ps'
@@ -87,7 +92,7 @@ ssh root@72.61.239.69 'grep RUNPOD_POD_ID /app/airco/.env.production'
 
 The API container bind-mounts `gpu_controller.py` from the host:
 ```
-/app/airco/gpu_controller.py → /app/airco/services/api/api/gpu_controller.py (in container)
+/app/airco/gpu_controller.py → /app/api/gpu_controller.py (in container)
 ```
 
 To update the GPU controller without rebuilding the image:
@@ -160,7 +165,19 @@ ssh root@72.61.239.69 'cd /app/airco && docker compose -f docker-compose.cpu.yml
 
 ## Full Redeploy Procedure
 
-When deploying a new version of the images from GHCR:
+Preferred path is GitHub Actions:
+
+1. Run `.github/workflows/build-images.yml`
+2. Leave `full_rebuild=false` for a normal redeploy
+3. Set `full_rebuild=true` only if you need to force rebuilding all images
+
+That workflow:
+- rebuilds only the image jobs whose path filters matched unless `full_rebuild=true`
+- uploads `docker-compose.cpu.yml`, `gpu_controller.py`, `runpod_client.py`, and `routes/sessions.py` to `/app/airco/.gha-deploy/`
+- stages those files into `/app/airco/`
+- runs `docker compose pull`, `up -d`, and Alembic on the VPS
+
+Manual SSH fallback:
 
 ```bash
 # 1. SSH into VPS

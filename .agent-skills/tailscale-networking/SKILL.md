@@ -85,6 +85,12 @@ tailscale status
 tailscale ip  # shows pod's Tailscale IP
 ```
 
+The usual startup order is:
+1. Hostinger API resumes the RunPod pod
+2. Pod bootstrap starts `tailscaled`
+3. Pod joins the tailnet as `airco-gpu`
+4. Pod bootstrap pulls `/workspace/The-Airco-V2` and starts the GPU compose stack
+
 ## Debugging Tailscale Issues
 
 ### GPU pod not showing in `tailscale status` on VPS
