@@ -55,7 +55,7 @@ def test_local_compose_adds_session_control_bridge():
     session_control = compose["services"]["session-control"]
 
     assert session_control["profiles"] == ["gpu", "gpu-full"]
-    assert session_control["environment"]["GO2RTC_URL"] == "http://host.docker.internal:1984"
+    assert session_control["environment"]["GO2RTC_URL"] == "http://go2rtc:1984"
     assert session_control["depends_on"]["go2rtc"]["condition"] == "service_started"
     assert session_control["depends_on"]["api"]["condition"] == "service_started"
 
@@ -67,7 +67,7 @@ def test_local_compose_adds_ultimate_adapter_service():
     adapter = compose["services"]["ultimate-adapter"]
 
     assert adapter["profiles"] == ["gpu", "gpu-full"]
-    assert adapter["environment"]["GO2RTC_RTSP_BASE_URL"] == "rtsp://host.docker.internal:8556"
+    assert adapter["environment"]["GO2RTC_RTSP_BASE_URL"] == "rtsp://go2rtc:8556"
     assert adapter["depends_on"]["session-control"]["condition"] == "service_healthy"
     assert adapter["depends_on"]["api"]["condition"] == "service_started"
 
@@ -91,7 +91,7 @@ def test_local_gpu_full_compose_adds_multi_camera_savant_feeder():
 
     feeder = compose["services"]["savant-feeder"]
 
-    assert feeder["profiles"] == ["gpu-full"]
+    assert feeder["profiles"] == ["gpu", "gpu-full"]
     assert feeder["environment"]["ZMQ_SRC_ENDPOINT"] == "dealer+connect:tcp://savant-pipeline:5000"
     assert feeder["depends_on"]["session-control"]["condition"] == "service_healthy"
     assert feeder["depends_on"]["savant-pipeline"]["condition"] == "service_started"

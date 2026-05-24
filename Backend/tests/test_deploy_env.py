@@ -19,6 +19,7 @@ def test_render_env_overrides_secret_placeholders():
             "MINIO_SECRET_KEY": "minio-pass",
             "CENTRIFUGO_API_KEY": "centrifugo-key",
             "CENTRIFUGO_TOKEN_SECRET": "centrifugo-secret",
+            "SESSION_SECRET": "ci-session-secret",
             "SUPABASE_URL": "https://placeholder.supabase.co",
             "SUPABASE_ANON_KEY": "ci-anon-key",
             "SUPABASE_SERVICE_ROLE_KEY": "ci-service-key",
@@ -52,6 +53,7 @@ def test_render_env_cli_runs_without_pythonpath(tmp_path):
             "MINIO_SECRET_KEY": "minio-pass",
             "CENTRIFUGO_API_KEY": "centrifugo-key",
             "CENTRIFUGO_TOKEN_SECRET": "centrifugo-secret",
+            "SESSION_SECRET": "ci-session-secret",
             "SUPABASE_URL": "https://placeholder.supabase.co",
             "SUPABASE_ANON_KEY": "ci-anon-key",
             "SUPABASE_SERVICE_ROLE_KEY": "ci-service-key",
@@ -60,9 +62,9 @@ def test_render_env_cli_runs_without_pythonpath(tmp_path):
 
     result = subprocess.run(
         [
-            "./v2/scripts/render_env.py",
+            "./Backend/scripts/render_env.py",
             "--template",
-            "v2/.env.production.template",
+            "Backend/.env.production.template",
             "--output",
             str(output_path),
         ],
@@ -76,4 +78,4 @@ def test_render_env_cli_runs_without_pythonpath(tmp_path):
     assert result.returncode == 0, result.stderr
     rendered = output_path.read_text()
     assert "POSTGRES_PASSWORD=prod-db-pass" in rendered
-    assert "PUBLIC_API_URL=https://the-airco.net" in rendered
+    assert "PUBLIC_API_URL=https://api.the-airco.net" in rendered

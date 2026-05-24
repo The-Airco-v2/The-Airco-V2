@@ -1,12 +1,8 @@
 name: Build RunPod Bootstrap Image
 
 on:
-  push:
-    branches: [main, "deploy/**"]
-    paths:
-      - "Backend/docker/Dockerfile.runpod-bootstrap"
-      - "Backend/docker/bootstrap-entrypoint.sh"
-      - ".github/workflows/build-runpod-bootstrap.yml"
+  workflow_dispatch:
+
 
 jobs:
   build:

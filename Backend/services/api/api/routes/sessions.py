@@ -338,14 +338,11 @@ async def stop_session(
         "event_type": "session_stop",
         "session_id": str(session_id),
     })
-    # Immediately stop GPU if no other sessions are still running.
-    # This avoids waiting for the full GPU_IDLE_TIMEOUT_SECONDS after
-    # an explicit user-initiated stop.
-    background_tasks.add_task(_maybe_stop_gpu_after_session, db)
+    background_tasks.add_task(_maybe_stop_gpu_after_session)
     return {"status": "stopped"}
 
 
-async def _maybe_stop_gpu_after_session(db: AsyncSession) -> None:
+async def _maybe_stop_gpu_after_session() -> None:
     """Stop the GPU pod after a 60s grace period if no sessions remain active.
 
     The grace period lets any in-flight analytics / snapshot writes finish
@@ -358,12 +355,14 @@ async def _maybe_stop_gpu_after_session(db: AsyncSession) -> None:
         await asyncio.sleep(GPU_STOP_GRACE_SECONDS)
 
         # Re-check after the grace period — a new session may have started.
-        result = await db.execute(
-            select(func.count(Session.id)).where(
-                Session.status.in_(("running", "starting"))
+        async with async_session() as db:
+            result = await db.execute(
+                select(func.count(Session.id)).where(
+                    Session.status.in_(("running", "starting"))
+                )
             )
-        )
-        active_count = result.scalar_one() or 0
+            active_count = result.scalar_one() or 0
+
         if active_count > 0:
             logger.info(
                 "GPU stop skipped — %d session(s) became active during grace period",
@@ -380,6 +379,7 @@ async def _maybe_stop_gpu_after_session(db: AsyncSession) -> None:
             await controller.stop()
     except Exception:
         logger.exception("_maybe_stop_gpu_after_session failed")
+
 
 
 

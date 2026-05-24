@@ -27,7 +27,7 @@ Tailscale mesh — Postgres, Redis, MinIO, Centrifugo, go2rtc.
 
 ## Auth Key
 
-- **Tailscale Auth Key:** `tskey-auth-kCi9o6yMF211CNTRL-Yip8RAwt9BEWSr9tH34DBEiLzzBVRKzv`
+- **Tailscale Auth Key:** `tskey-auth-kCi9o6yMF211CNTRL-...`
 - Stored in: `TAILSCALE_AUTHKEY` in `/app/airco/.env.production` on VPS
 - Used by GPU pod in `dockerArgs` to connect on startup
 
@@ -77,7 +77,7 @@ so the same node identity is reused across pod stop/start:
 # On the pod (run as part of dockerArgs bootstrap):
 tailscaled --state=/workspace/tailscale.state >/tmp/tailscaled.log 2>&1 &
 sleep 5
-tailscale up --authkey=tskey-auth-kCi9o6yMF211CNTRL-Yip8RAwt9BEWSr9tH34DBEiLzzBVRKzv \
+tailscale up --authkey=tskey-auth-kCi9o6yMF211CNTRL-... \
   --accept-routes=false --hostname=airco-gpu
 
 # Check if connected (on pod):

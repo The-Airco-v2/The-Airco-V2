@@ -14,11 +14,8 @@ name: Build & push images
 # works for forks/renames without code changes.
 
 on:
-  push:
-    branches:
-      - main
-      - "deploy/**"
   workflow_dispatch:
+
 
 permissions:
   contents: read

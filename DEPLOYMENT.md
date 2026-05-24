@@ -6,12 +6,12 @@ Living document. Read top-down for "where are we, what's next." Architecture con
 
 | Layer | Provider | Cost/mo | Status |
 |---|---|---|---|
-| Frontend | Cloudflare Pages | $0 | Pending Phase 7 |
-| API + CPU services | **Hostinger KVM 2 Singapore** | ~$9–12 | Pending Phase 3 |
-| GPU on demand | RunPod Community RTX 3090 | $0.20/hr (when running) + ~$5/mo storage | Pending Phase 5 |
+| Frontend | Cloudflare Pages | $0 | ✅ Deployed (`https://the-airco-v2.pages.dev`) |
+| API + CPU services | **Hostinger KVM 2 Singapore** | ~$9–12 | ✅ Running (VPS: `72.61.239.69`, Tailscale: `100.103.80.105`) |
+| GPU on demand | RunPod Community RTX A4000 | ~$0.30/hr (when running) + ~$5/mo storage | ✅ Deployed (Pod ID: `an5cwp48emcmjj`) |
 | Image registry | **GHCR — `ghcr.io/the-airco-v2/`** | $0 (private images) | ✅ Working |
-| Inter-host networking | Tailscale free tier | $0 | Pending |
-| DNS + TLS | Cloudflare DNS + Caddy on the CPU host | $0 | Pending Phase 4 |
+| Inter-host networking | Tailscale free tier | $0 | ✅ Connected (`airco-hub` and `airco-gpu`) |
+| DNS + TLS | Cloudflare DNS + Caddy on the CPU host | $0 | ✅ Active (`api.the-airco.net`) |
 
 Repo: `github.com/The-Airco-v2/The-Airco-V2` (transferred from `dscyrus07-dev`)
 Domain: `the-airco.net`
@@ -21,14 +21,14 @@ Branch with deploy code: `deploy/ghcr-and-compose` (not yet merged to `main`)
 
 | Phase | What | Status |
 |---|---|---|
-| 0 | Pre-flight (accounts, billing, secrets) | Partial — see "Tomorrow" below |
+| 0 | Pre-flight (accounts, billing, secrets) | ✅ Done |
 | 1 | Code changes land in repo | ✅ Done (9 commits on `deploy/ghcr-and-compose`) |
 | 2 | Build & publish images to GHCR | ✅ First run green; second run after most recent push should also go green |
-| 3 | Provision Hostinger VPS + bring up CPU stack | ⏳ Blocked on you buying the VPS |
-| 4 | DNS + TLS via Cloudflare + Caddy | ⏳ Blocked on Phase 3 + Cloudflare API token |
-| 5 | RunPod GPU pod setup | ⏳ Blocked on RunPod billing + API key + registry-auth click |
-| 6 | Boot controller integration test | ⏳ Blocked on Phases 3 + 5 |
-| 7 | Frontend on Cloudflare Pages | ⏳ Blocked on Cloudflare → GitHub OAuth click |
+| 3 | Provision Hostinger VPS + bring up CPU stack | ✅ Done |
+| 4 | DNS + TLS via Cloudflare + Caddy | ✅ Done |
+| 5 | RunPod GPU pod setup | ✅ Done (Pod ID: `an5cwp48emcmjj` allocated) |
+| 6 | Boot controller integration test | ⏳ Ready (Requires starting a session to test) |
+| 7 | Frontend on Cloudflare Pages | ✅ Done |
 | 8 | Cameras + smoke test | ⏳ Blocked on you providing RTSP URLs |
 
 ## What's in the repo so far (deploy/ghcr-and-compose, 9 commits)
@@ -101,6 +101,20 @@ Generated locally as `~/.ssh/airco_deploy` / `~/.ssh/airco_deploy.pub`.
 Public key (paste into Hostinger during VPS setup):
 ```
 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILtVDT772Ne2yP9WxdZ/9nWbeBDQl/w0oEkAa78UVhSd claude@airco-deploy
+
+Plan changes this is what I generated
+Generating public/private ed25519 key pair.
+Enter file in which to save the key (/home/nikhil/.ssh/id_ed25519):                                                                               
+/home/nikhil/.ssh/id_ed25519 already exists.
+Overwrite (y/n)? y
+Enter passphrase (empty for no passphrase): 
+Enter same passphrase again: 
+Your identification has been saved in /home/nikhil/.ssh/id_ed25519
+Your public key has been saved in /home/nikhil/.ssh/id_ed25519.pub
+The key fingerprint is:
+SHA256:mHEZq7L3PtkBPXi3qfRiac4CxkF7bBy1727S1YIT3Wk info@the-airco.com
+The key's randomart image is:
+
 ```
 
 ## Tomorrow — your checklist (in order)
