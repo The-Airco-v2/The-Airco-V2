@@ -41,6 +41,13 @@ RUN apt-get update -qq && \
 # Install podman-compose
 RUN pip3 install --quiet podman-compose
 
+# Podman is running inside an unprivileged outer container on RunPod.
+# These vars match the upstream podman-in-container guidance and prevent
+# userns re-exec paths that fail with "cannot clone: Operation not permitted".
+ENV _CONTAINERS_USERNS_CONFIGURED=""
+ENV BUILDAH_ISOLATION=chroot
+ENV container=oci
+
 # Install NVIDIA Container Toolkit
 RUN curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
       | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg && \
