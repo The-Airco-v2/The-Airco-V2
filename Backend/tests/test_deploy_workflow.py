@@ -42,3 +42,5 @@ def test_runpod_deploy_workflow_uses_env_file_secret_and_script():
     assert "Backend/.env.runpod" in workflow
     assert "python3 Backend/scripts/create_runpod_pod.py --env-file Backend/.env.runpod" in workflow
     assert "AUTO_LINK_HOSTINGER" in workflow
+    assert "pod_id=" in workflow
+    assert "appleboy/ssh-action@" in workflow

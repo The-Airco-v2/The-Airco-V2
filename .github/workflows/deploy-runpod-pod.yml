@@ -35,10 +35,12 @@ jobs:
           test -n "${RUNPOD_ENV_FILE}"
           printf '%s\n' "${RUNPOD_ENV_FILE}" > Backend/.env.runpod
 
-      - name: Verify automatic Hostinger cutover is enabled
+      - name: Verify Hostinger cutover config is present
         run: |
           set -euo pipefail
           grep -q '^AUTO_LINK_HOSTINGER=1$' Backend/.env.runpod
+          grep -q '^HOSTINGER_ENV_FILE=' Backend/.env.runpod
+          grep -q '^HOSTINGER_APP_DIR=' Backend/.env.runpod
 
       - name: Log in to GHCR
         if: github.event.inputs.rebuild_bootstrap == 'true'
@@ -66,6 +68,24 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Create RunPod pod
+        id: create_pod
         run: |
           set -euo pipefail
-          python3 Backend/scripts/create_runpod_pod.py --env-file Backend/.env.runpod
+          sed -i 's/^AUTO_LINK_HOSTINGER=.*/AUTO_LINK_HOSTINGER=0/' Backend/.env.runpod
+          output=$(python3 Backend/scripts/create_runpod_pod.py --env-file Backend/.env.runpod)
+          printf '%s\n' "$output"
+          pod_id=$(printf '%s\n' "$output" | awk '/Pod ID:/ {print $3; exit}')
+          test -n "$pod_id"
+          echo "pod_id=$pod_id" >> "$GITHUB_OUTPUT"
+
+      - name: Link Hostinger API to new pod
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 72.61.239.69
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -e
+            sed -i 's/^RUNPOD_POD_ID=.*/RUNPOD_POD_ID=${{ steps.create_pod.outputs.pod_id }}/' /app/airco/.env.production
+            cd /app/airco
+            docker compose -f docker-compose.cpu.yml --env-file .env.production restart api
