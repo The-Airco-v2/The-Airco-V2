@@ -15,14 +15,14 @@ Living document. Read top-down for "where are we, what's next." Architecture con
 
 Repo: `github.com/The-Airco-v2/The-Airco-V2` (transferred from `dscyrus07-dev`)
 Domain: `the-airco.net`
-Branch with deploy code: `deploy/ghcr-and-compose` (not yet merged to `main`)
+Branch with deploy code: `main` (merged)
 
 ## Phase tracker
 
 | Phase | What | Status |
 |---|---|---|
 | 0 | Pre-flight (accounts, billing, secrets) | ✅ Done |
-| 1 | Code changes land in repo | ✅ Done (9 commits on `deploy/ghcr-and-compose`) |
+| 1 | Code changes land in repo | ✅ Done (merged to `main`) |
 | 2 | Build & publish images to GHCR | ✅ First run green; second run after most recent push should also go green |
 | 3 | Provision Hostinger VPS + bring up CPU stack | ✅ Done |
 | 4 | DNS + TLS via Cloudflare + Caddy | ✅ Done |
@@ -31,7 +31,7 @@ Branch with deploy code: `deploy/ghcr-and-compose` (not yet merged to `main`)
 | 7 | Frontend on Cloudflare Pages | ✅ Done |
 | 8 | Cameras + smoke test | ⏳ Blocked on you providing RTSP URLs |
 
-## What's in the repo so far (deploy/ghcr-and-compose, 9 commits)
+## What's in the repo so far (`main`)
 
 | SHA | Subject |
 |---|---|
