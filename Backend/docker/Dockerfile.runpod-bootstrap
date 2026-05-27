@@ -12,7 +12,7 @@
 #   dockerArgs: (leave empty — ENTRYPOINT runs the bootstrap)
 #   env: TAILSCALE_AUTHKEY, GHCR_PAT, + all Postgres/MinIO/Centrifugo vars
 
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 # Avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
@@ -44,22 +44,23 @@ RUN apt-get update -qq && \
         fuse-overlayfs && \
     rm -rf /var/lib/apt/lists/*
 
-# Install podman-compose
-RUN pip3 install --quiet podman-compose
+# Install podman-compose (using break-system-packages for Ubuntu 24.04 PEP 668 compatibility)
+RUN pip3 install --break-system-packages --quiet podman-compose
 
 # Podman is running inside an unprivileged outer container on RunPod.
-# These vars match the upstream podman-in-container guidance and prevent
-# userns re-exec paths that fail with "cannot clone: Operation not permitted".
-ENV _CONTAINERS_USERNS_CONFIGURED="done"
+# In Podman 4.x (Ubuntu 24.04), we leverage the native single-UID mode without newuidmap
+# by setting ignore_chown_errors = "true" in storage.conf, avoiding userns crash hacks.
 ENV BUILDAH_ISOLATION=chroot
 ENV container=oci
 
-# Configure VFS storage driver for unprivileged rootful container compatibility
+# Configure VFS storage driver with ignore_chown_errors for single-UID nested container compatibility
 RUN mkdir -p /etc/containers && \
     echo '[storage]' > /etc/containers/storage.conf && \
     echo 'driver = "vfs"' >> /etc/containers/storage.conf && \
     echo 'runroot = "/run/containers/storage"' >> /etc/containers/storage.conf && \
-    echo 'graphroot = "/var/lib/containers/storage"' >> /etc/containers/storage.conf
+    echo 'graphroot = "/var/lib/containers/storage"' >> /etc/containers/storage.conf && \
+    echo '[storage.options]' >> /etc/containers/storage.conf && \
+    echo 'ignore_chown_errors = "true"' >> /etc/containers/storage.conf
 
 # Install NVIDIA Container Toolkit
 RUN curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
