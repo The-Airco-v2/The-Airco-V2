@@ -55,7 +55,25 @@ class GpuController:
 
     @property
     def enabled(self) -> bool:
-        return bool(settings.runpod_api_key and settings.runpod_pod_id)
+        return bool(settings.runpod_api_key)
+
+    async def get_active_pod_id(self) -> str | None:
+        redis = await get_redis()
+        active = await redis.get("airco:active_runpod_pod_id")
+        if active:
+            return active.decode() if isinstance(active, bytes) else active
+        return settings.runpod_pod_id or None
+
+    async def set_active_pod_id(self, pod_id: str) -> None:
+        redis = await get_redis()
+        await redis.set("airco:active_runpod_pod_id", pod_id)
+
+    async def get_all_pods(self) -> list[PodInfo] | None:
+        """Fetch all pods from RunPod if controller is enabled."""
+        if not self.enabled:
+            return None
+        client = self._get_client()
+        return await client.get_all_pods()
 
     def _get_client(self) -> RunPodClient:
         if self._client is None:
@@ -69,8 +87,11 @@ class GpuController:
         """Fetch the current PodInfo from RunPod if the controller is enabled."""
         if not self.enabled:
             return None
+        pod_id = await self.get_active_pod_id()
+        if not pod_id:
+            return None
         client = self._get_client()
-        return await client.get_pod(settings.runpod_pod_id)
+        return await client.get_pod(pod_id)
 
     async def ensure_running(self) -> None:
         """Block until the GPU pod is RUNNING and the health target is reachable.
@@ -82,18 +103,23 @@ class GpuController:
             logger.debug("gpu controller disabled; ensure_running is a no-op")
             return
 
+        pod_id = await self.get_active_pod_id()
+        if not pod_id:
+            logger.error("gpu controller enabled but no active pod id found")
+            return
+
         async with self._local_lock:
             client = self._get_client()
-            pod = await client.get_pod(settings.runpod_pod_id)
+            pod = await client.get_pod(pod_id)
             if pod.state == PodState.RUNNING:
-                logger.debug("gpu pod %s already RUNNING", settings.runpod_pod_id)
+                logger.debug("gpu pod %s already RUNNING", pod_id)
                 await self._record_seen_running()
                 if settings.gpu_health_target:
                     await self._wait_for_health(settings.gpu_health_target)
                 return
             if pod.state == PodState.TERMINATED:
                 raise RunPodError(
-                    f"GPU pod {settings.runpod_pod_id} is in non-resumable state {pod.state.value}"
+                    f"GPU pod {pod_id} is in non-resumable state {pod.state.value}"
                 )
 
             # Acquire cross-replica Redis lock before mutating state.
@@ -104,9 +130,9 @@ class GpuController:
                     # Another process is resuming. Just wait for health.
                     logger.info("another worker is resuming gpu pod; waiting for health")
                 else:
-                    logger.info("resuming gpu pod %s", settings.runpod_pod_id)
-                    await client.resume_pod(settings.runpod_pod_id)
-                await self._wait_for_state(client, PodState.RUNNING)
+                    logger.info("resuming gpu pod %s", pod_id)
+                    await client.resume_pod(pod_id)
+                await self._wait_for_state(client, pod_id, PodState.RUNNING)
                 if settings.gpu_health_target:
                     await self._wait_for_health(settings.gpu_health_target)
                 await self._record_seen_running()
@@ -117,14 +143,17 @@ class GpuController:
     async def stop(self) -> None:
         if not self.enabled:
             return
+        pod_id = await self.get_active_pod_id()
+        if not pod_id:
+            return
         async with self._local_lock:
             client = self._get_client()
-            pod = await client.get_pod(settings.runpod_pod_id)
+            pod = await client.get_pod(pod_id)
             if pod.state != PodState.RUNNING:
                 logger.debug("gpu pod already %s, no stop needed", pod.state.value)
                 return
-            logger.info("stopping gpu pod %s", settings.runpod_pod_id)
-            await client.stop_pod(settings.runpod_pod_id)
+            logger.info("stopping gpu pod %s", pod_id)
+            await client.stop_pod(pod_id)
 
     async def release_if_idle(self) -> bool:
         """Stop the pod if there are no running sessions and the
@@ -187,12 +216,13 @@ class GpuController:
     async def _wait_for_state(
         self,
         client: RunPodClient,
+        pod_id: str,
         target: PodState,
         poll_interval: float = 2.0,
     ) -> None:
         deadline = time.time() + settings.gpu_boot_timeout_seconds
         while time.time() < deadline:
-            pod = await client.get_pod(settings.runpod_pod_id)
+            pod = await client.get_pod(pod_id)
             if pod.state == target:
                 return
             await asyncio.sleep(poll_interval)

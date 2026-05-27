@@ -9,10 +9,19 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useCameras } from "@/hooks/useCameras";
 import {
   useCreateSession,
   useGpuStatus,
+  useAvailableGpus,
+  useSetActiveGpu,
   useSessions,
   useStartSession,
   useStopSession,
@@ -25,6 +34,8 @@ export default function SessionsPage() {
   const { data: sessions, isLoading, error } = useSessions();
   const { data: ultimateStatus } = useUltimateRuntimeStatus();
   const { data: gpuStatus } = useGpuStatus();
+  const { data: availableGpus } = useAvailableGpus();
+  const setActiveGpu = useSetActiveGpu();
   const { data: cameras } = useCameras();
   const createSession = useCreateSession();
   const startSession = useStartSession();
@@ -121,9 +132,30 @@ export default function SessionsPage() {
                 Allocated GPU ({gpuStatus?.type === "runpod" ? "RunPod" : "Local Dev"})
               </p>
               <div className="mt-1 flex items-center gap-2">
-                <p className="text-sm font-medium text-zinc-100">
-                  {gpuStatus?.gpu_name || "No GPU detected"}
-                </p>
+                {gpuStatus?.type === "runpod" ? (
+                  <Select
+                    value={gpuStatus?.gpu_id || ""}
+                    onValueChange={(val) => {
+                      if (val) setActiveGpu.mutate(val);
+                    }}
+                    disabled={setActiveGpu.isPending}
+                  >
+                    <SelectTrigger className="h-7 w-[220px] border-zinc-700 bg-zinc-800 text-xs text-zinc-100 focus:ring-sky-500">
+                      <SelectValue placeholder="Select GPU pod..." />
+                    </SelectTrigger>
+                    <SelectContent className="border-zinc-700 bg-zinc-800">
+                      {availableGpus?.pods.map((pod) => (
+                        <SelectItem key={pod.id} value={pod.id} className="text-xs text-zinc-200 hover:bg-zinc-700">
+                          {pod.name} ({pod.status})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <p className="text-sm font-medium text-zinc-100">
+                    {gpuStatus?.gpu_name || "No GPU detected"}
+                  </p>
+                )}
                 <span className="flex h-2 w-2 relative">
                   <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${gpuStatus?.status === "ON" ? "bg-emerald-400" : "bg-zinc-500"}`}></span>
                   <span className={`relative inline-flex rounded-full h-2 w-2 ${gpuStatus?.status === "ON" ? "bg-emerald-500" : "bg-zinc-600"}`}></span>

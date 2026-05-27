@@ -129,6 +129,68 @@ class RunPodClient:
             raw=pod,
         )
 
+    async def get_all_pods(self) -> list[PodInfo]:
+        query = """
+        query {
+            myself {
+                pods {
+                    id
+                    desiredStatus
+                    lastStatusChange
+                    gpuCount
+                    vcpuCount
+                    memoryInGb
+                    volumeInGb
+                    containerDiskInGb
+                    imageName
+                    machineId
+                    machine {
+                        gpuDisplayName
+                    }
+                    runtime {
+                        ports {
+                            ip
+                            isIpPublic
+                            privatePort
+                            publicPort
+                            type
+                        }
+                    }
+                }
+            }
+        }
+        """
+        data = await self._post(query)
+        myself = data.get("myself") or {}
+        pods_data = myself.get("pods") or []
+        pods = []
+        
+        for pod in pods_data:
+            state_raw = (pod.get("desiredStatus") or "").upper()
+            try:
+                state = PodState(state_raw)
+            except ValueError:
+                state = PodState.UNKNOWN
+                
+            public_ip = None
+            runtime = pod.get("runtime") or {}
+            for port in runtime.get("ports") or []:
+                if port.get("isIpPublic") and port.get("ip"):
+                    public_ip = port["ip"]
+                    break
+                    
+            pods.append(
+                PodInfo(
+                    pod_id=pod.get("id", "unknown"),
+                    state=state,
+                    gpu_count=int(pod.get("gpuCount") or 0),
+                    public_ip=public_ip,
+                    raw=pod,
+                )
+            )
+            
+        return pods
+
     async def resume_pod(self, pod_id: str, gpu_count: int = 1) -> dict[str, Any]:
         mutation = """
         mutation Resume($input: PodResumeInput!) {

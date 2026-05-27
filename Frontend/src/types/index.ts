@@ -133,6 +133,19 @@ export interface UltimateRuntimeStatus {
   workers: UltimateRuntimeWorkerStatus[];
 }
 
+export interface RunPodGpu {
+  id: string;
+  name: string;
+  status: string;
+  gpu: string;
+  image: string;
+}
+
+export interface AvailableGpusResponse {
+  pods: RunPodGpu[];
+  error?: string;
+}
+
 export interface GpuStatus {
   type: "runpod" | "local";
   is_enabled: boolean;

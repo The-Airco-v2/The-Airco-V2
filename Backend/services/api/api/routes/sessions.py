@@ -182,6 +182,46 @@ class GpuStatusResponse(BaseModel):
     memory: str | None = None
     configuration: dict[str, str] | None = None
 
+class ActiveGpuRequest(BaseModel):
+    pod_id: str
+
+@router.get("/runtime/available-gpus")
+async def get_available_gpus(auth: AuthState = Depends(require_authenticated)):
+    _ = auth
+    controller = get_gpu_controller()
+    if not controller.enabled:
+        return {"pods": []}
+    try:
+        pods = await controller.get_all_pods()
+        if not pods:
+            return {"pods": []}
+        return {
+            "pods": [
+                {
+                    "id": p.pod_id,
+                    "name": p.raw.get("name") or "Unknown",
+                    "status": p.state.value,
+                    "gpu": p.raw.get("machine", {}).get("gpuDisplayName") or "Unknown",
+                    "image": p.raw.get("imageName") or "Unknown",
+                }
+                for p in pods
+            ]
+        }
+    except Exception as exc:
+        logger.exception("Failed to fetch available GPUs from RunPod")
+        return {"pods": [], "error": str(exc)}
+
+@router.post("/runtime/active-gpu")
+async def set_active_gpu(
+    body: ActiveGpuRequest,
+    auth: AuthState = Depends(require_admin),
+):
+    controller = get_gpu_controller()
+    if not controller.enabled:
+        raise HTTPException(400, "RunPod API is not configured")
+    await controller.set_active_pod_id(body.pod_id)
+    return {"status": "success", "active_pod_id": body.pod_id}
+
 
 def get_local_gpu_info_fallback() -> dict[str, Any]:
     if not shutil.which("nvidia-smi"):
@@ -288,13 +328,14 @@ async def get_gpu_status(
                 )
         except Exception as exc:
             logger.exception("Failed to query RunPod GPU status")
+            active_pod_id = await controller.get_active_pod_id()
             return GpuStatusResponse(
                 type="runpod",
                 is_enabled=True,
                 status="OFF",
                 gpu_name="RunPod GPU (Query Failed)",
                 gpu_count=None,
-                gpu_id=settings.runpod_pod_id,
+                gpu_id=active_pod_id,
                 memory=None,
                 configuration={"error": str(exc)}
             )

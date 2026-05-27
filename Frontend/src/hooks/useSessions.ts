@@ -20,6 +20,7 @@ import type {
   StartSessionPayload,
   UltimateRuntimeStatus,
   GpuStatus,
+  AvailableGpusResponse,
 } from "@/types";
 
 export const overviewTodayQueryKey = ["overview-today"] as const;
@@ -228,6 +229,27 @@ export function useGpuStatus() {
     queryKey: ["gpu-status"],
     queryFn: () => apiFetchJson<GpuStatus>("/api/v2/sessions/runtime/gpu-status"),
     refetchInterval: 5_000,
+  });
+}
+
+export function useAvailableGpus() {
+  return useQuery({
+    queryKey: ["available-gpus"],
+    queryFn: () => apiFetchJson<AvailableGpusResponse>("/api/v2/sessions/runtime/available-gpus"),
+  });
+}
+
+export function useSetActiveGpu() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (pod_id: string) =>
+      apiFetchJson("/api/v2/sessions/runtime/active-gpu", {
+        method: "POST",
+        body: JSON.stringify({ pod_id }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["gpu-status"] });
+    },
   });
 }
 
