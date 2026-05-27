@@ -125,36 +125,43 @@ echo "--- .env.production ---"
 cat .env.production
 echo "-----------------------"
 
-# ── 5. Start GPU stack via Podman ────────────────────────────────────────────
-echo "[5/5] Starting GPU stack via Podman..."
+# ── 5. Start GPU stack via Docker ────────────────────────────────────────────
+echo "[5/5] Starting GPU stack via Docker..."
 
-# Diagnostic info — useful if Podman still fails
-echo "--- Podman diagnostics ---"
-echo "Podman version: $(podman --version 2>&1 || echo 'N/A')"
-echo "_CONTAINERS_USERNS_CONFIGURED=${_CONTAINERS_USERNS_CONFIGURED:-<unset>}"
-echo "PODMAN_USERNS=${PODMAN_USERNS:-<unset>}"
-echo "containers.conf:"
-cat /etc/containers/containers.conf 2>/dev/null || echo "(missing)"
-echo "storage.conf:"
-cat /etc/containers/storage.conf 2>/dev/null || echo "(missing)"
+# Start dockerd in the background
+dockerd &
+echo "Waiting for dockerd to start..."
+for i in {1..10}; do
+    if docker info >/dev/null 2>&1; then
+        echo "Docker daemon is ready!"
+        break
+    fi
+    sleep 2
+done
+
+# Diagnostic info — useful if Docker still fails
+echo "--- Docker diagnostics ---"
+echo "Docker version: $(docker --version 2>&1 || echo 'N/A')"
+echo "daemon.json:"
+cat /etc/docker/daemon.json 2>/dev/null || echo "(missing)"
 echo "--------------------------"
 
-# Smoke-test: if 'podman info' fails, the rest won't work either
-if ! podman info >/dev/null 2>&1; then
-    echo "WARNING: 'podman info' failed — dumping full output:"
-    podman info 2>&1 || true
+# Smoke-test: if 'docker info' fails, the rest won't work either
+if ! docker info >/dev/null 2>&1; then
+    echo "WARNING: 'docker info' failed — dumping full output:"
+    docker info 2>&1 || true
 fi
 
-echo "${GHCR_PAT}" | podman login ghcr.io -u nick2580 --password-stdin
+echo "${GHCR_PAT}" | docker login ghcr.io -u nick2580 --password-stdin
 
-podman-compose -f docker-compose.gpu.yml --env-file .env.production pull
-podman-compose -f docker-compose.gpu.yml --env-file .env.production up -d
+docker compose -f docker-compose.gpu.yml --env-file .env.production pull
+docker compose -f docker-compose.gpu.yml --env-file .env.production up -d
 
 echo ""
 echo "================================================================"
 echo "  Bootstrap complete — $(date -u)"
 echo "  Containers:"
-podman ps
+docker ps
 echo "================================================================"
 
 # Keep alive

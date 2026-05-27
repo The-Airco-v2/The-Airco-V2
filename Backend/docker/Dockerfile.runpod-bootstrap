@@ -35,43 +35,17 @@ RUN apt-get update -qq && \
 # Install Tailscale
 RUN curl -fsSL https://tailscale.com/install.sh | sh
 
-# Install Podman
+# Install Docker
 RUN apt-get update -qq && \
     apt-get install -y --no-install-recommends \
-        podman \
-        uidmap \
-        slirp4netns \
-        fuse-overlayfs && \
+        docker.io \
+        docker-compose-v2 && \
     rm -rf /var/lib/apt/lists/*
 
-# Install podman-compose (using break-system-packages for Ubuntu 24.04 PEP 668 compatibility)
-RUN pip3 install --break-system-packages --quiet podman-compose
-
-# Podman is running inside an unprivileged outer container on RunPod.
-# In Podman 4.x (Ubuntu 24.04), we leverage the native single-UID mode without newuidmap
-# by setting ignore_chown_errors = "true" in storage.conf, avoiding userns crash hacks.
-ENV BUILDAH_ISOLATION=chroot
-ENV container=oci
-
-# Configure VFS storage driver with ignore_chown_errors for single-UID nested container compatibility
-RUN mkdir -p /etc/containers && \
-    echo '[storage]' > /etc/containers/storage.conf && \
-    echo 'driver = "vfs"' >> /etc/containers/storage.conf && \
-    echo 'runroot = "/run/containers/storage"' >> /etc/containers/storage.conf && \
-    echo 'graphroot = "/var/lib/containers/storage"' >> /etc/containers/storage.conf && \
-    echo '[storage.options]' >> /etc/containers/storage.conf && \
-    echo 'ignore_chown_errors = "true"' >> /etc/containers/storage.conf
-
-# Tell Podman to use host namespaces instead of attempting clone/re-exec into
-# a child user namespace (which RunPod's unprivileged container kernel blocks).
-# This was unsafe on Podman 3.x (nil storage panic) but Podman 4.x rewrote
-# the storage engine to handle single-UID rootless mode gracefully.
-RUN printf '[containers]\nuserns = "host"\nnetns = "host"\nipcns = "host"\n' \
-      > /etc/containers/containers.conf
-
-# Prevent Podman from attempting user-namespace re-exec (the "cannot clone" fix)
-ENV _CONTAINERS_USERNS_CONFIGURED=done
-ENV PODMAN_USERNS=host
+# Configure Docker daemon to use VFS storage driver and disable bridge/iptables
+# This allows Docker to run inside RunPod's unprivileged container without errors.
+RUN mkdir -p /etc/docker && \
+    echo '{\n  "storage-driver": "vfs",\n  "iptables": false,\n  "bridge": "none"\n}' > /etc/docker/daemon.json
 
 # Install NVIDIA Container Toolkit
 RUN curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
