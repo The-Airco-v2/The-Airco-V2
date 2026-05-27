@@ -88,6 +88,15 @@ def parse_args(argv: list[str]) -> dict[str, str | None]:
 
 def build_pod_config(gpu_type: str, env_file_values: dict[str, str] | None = None) -> dict:
     env_file_values = env_file_values or ENV_FILE_VALUES
+    
+    # Read local SSH public key to authorize on the pod
+    ssh_public_key = ""
+    for key_name in ("id_ed25519.pub", "id_rsa.pub"):
+        pub_path = Path.home() / ".ssh" / key_name
+        if pub_path.exists():
+            ssh_public_key = pub_path.read_text().strip()
+            break
+
     config = {
         "cloudType": "COMMUNITY",
         "gpuCount": 1,
@@ -102,6 +111,7 @@ def build_pod_config(gpu_type: str, env_file_values: dict[str, str] | None = Non
         "ports": "22/tcp,80/http",
         "volumeMountPath": "/workspace",
         "env": [
+            {"key": "SSH_PUBLIC_KEY",          "value": ssh_public_key},
             {"key": "TAILSCALE_AUTHKEY",       "value": resolve_env("TAILSCALE_AUTHKEY", env_file_values)},
             {"key": "GHCR_PAT",                "value": resolve_env("GHCR_PAT", env_file_values)},
             {"key": "POSTGRES_PASSWORD",       "value": resolve_env("POSTGRES_PASSWORD", env_file_values)},

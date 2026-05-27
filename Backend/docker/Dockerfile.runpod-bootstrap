@@ -27,6 +27,7 @@ RUN apt-get update -qq && \
         lsb-release \
         iptables \
         socat \
+        openssh-server \
         python3 \
         python3-pip && \
     rm -rf /var/lib/apt/lists/*
@@ -56,7 +57,9 @@ ENV container=oci
 # Configure VFS storage driver for unprivileged rootful container compatibility
 RUN mkdir -p /etc/containers && \
     echo '[storage]' > /etc/containers/storage.conf && \
-    echo 'driver = "vfs"' >> /etc/containers/storage.conf
+    echo 'driver = "vfs"' >> /etc/containers/storage.conf && \
+    echo 'runroot = "/run/containers/storage"' >> /etc/containers/storage.conf && \
+    echo 'graphroot = "/var/lib/containers/storage"' >> /etc/containers/storage.conf
 
 # Install NVIDIA Container Toolkit
 RUN curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \

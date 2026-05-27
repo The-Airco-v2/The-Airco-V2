@@ -15,6 +15,25 @@
 set -euo pipefail
 exec &> >(tee -a /workspace/bootstrap.log)
 
+# ── SSH Server ───────────────────────────────────────────────────────────────
+echo "Starting SSH server..."
+mkdir -p /var/run/sshd
+# Permit root login and configure password authentication
+echo "root:root" | chpasswd
+sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config || true
+sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config || true
+sed -i 's/PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config || true
+sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config || true
+if [ -n "${SSH_PUBLIC_KEY:-}" ]; then
+    echo "Adding authorized SSH public key..."
+    mkdir -p /root/.ssh
+    echo "${SSH_PUBLIC_KEY}" >> /root/.ssh/authorized_keys
+    chmod 700 /root/.ssh
+    chmod 600 /root/.ssh/authorized_keys
+fi
+ssh-keygen -A
+/usr/sbin/sshd
+
 TAILSCALE_SOCKET=/tmp/tailscaled.sock
 
 echo "================================================================"
