@@ -26,6 +26,7 @@ RUN apt-get update -qq && \
         gnupg \
         lsb-release \
         iptables \
+        socat \
         python3 \
         python3-pip && \
     rm -rf /var/lib/apt/lists/*
@@ -48,9 +49,14 @@ RUN pip3 install --quiet podman-compose
 # Podman is running inside an unprivileged outer container on RunPod.
 # These vars match the upstream podman-in-container guidance and prevent
 # userns re-exec paths that fail with "cannot clone: Operation not permitted".
-ENV _CONTAINERS_USERNS_CONFIGURED=""
+ENV _CONTAINERS_USERNS_CONFIGURED="done"
 ENV BUILDAH_ISOLATION=chroot
 ENV container=oci
+
+# Configure VFS storage driver for unprivileged rootful container compatibility
+RUN mkdir -p /etc/containers && \
+    echo '[storage]' > /etc/containers/storage.conf && \
+    echo 'driver = "vfs"' >> /etc/containers/storage.conf
 
 # Install NVIDIA Container Toolkit
 RUN curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \

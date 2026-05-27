@@ -28,6 +28,7 @@ tailscaled \
     --state=/workspace/tailscale.state \
     --socket="${TAILSCALE_SOCKET}" \
     --tun=userspace-networking \
+    --socks5-server=127.0.0.1:1055 \
     >/tmp/tailscaled.log 2>&1 &
 TAILSCALED_PID=$!
 sleep 8
@@ -51,6 +52,15 @@ tailscale --socket="${TAILSCALE_SOCKET}" up \
     --hostname=airco-gpu
 
 echo "TAILSCALE_OK — $(tailscale --socket="${TAILSCALE_SOCKET}" ip)"
+
+# Start SOCKS5 port forwarders to VPS over Tailscale SOCKS5 proxy
+echo "Starting SOCKS5 port forwarders to VPS..."
+socat TCP4-LISTEN:5432,fork,reuseaddr SOCKS4A:127.0.0.1:${AIRCO_HUB_HOST}:5432,socksport=1055 &
+socat TCP4-LISTEN:6379,fork,reuseaddr SOCKS4A:127.0.0.1:${AIRCO_HUB_HOST}:6379,socksport=1055 &
+socat TCP4-LISTEN:9000,fork,reuseaddr SOCKS4A:127.0.0.1:${AIRCO_HUB_HOST}:9000,socksport=1055 &
+socat TCP4-LISTEN:8088,fork,reuseaddr SOCKS4A:127.0.0.1:${AIRCO_HUB_HOST}:8088,socksport=1055 &
+socat TCP4-LISTEN:8554,fork,reuseaddr SOCKS4A:127.0.0.1:${AIRCO_HUB_HOST}:8554,socksport=1055 &
+socat TCP4-LISTEN:1984,fork,reuseaddr SOCKS4A:127.0.0.1:${AIRCO_HUB_HOST}:1984,socksport=1055 &
 
 # ── 2. NVIDIA CDI spec ────────────────────────────────────────────────────────
 echo "[2/5] Generating NVIDIA CDI spec..."
@@ -84,6 +94,10 @@ cd "${REPO}/Backend"
 
 env | grep -E '^(POSTGRES|MINIO|CENTRIFUGO|SUPABASE|SESSION|AIRCO|PUBLIC|IMAGE|TENANT|GHCR)' \
     > .env.production
+
+# Override AIRCO_HUB_HOST to 127.0.0.1 so services connect via local socat tunnels
+sed -i 's/^AIRCO_HUB_HOST=.*/AIRCO_HUB_HOST=127.0.0.1/' .env.production
+grep -q '^AIRCO_HUB_HOST=' .env.production || echo "AIRCO_HUB_HOST=127.0.0.1" >> .env.production
 
 grep -q IMAGE_REGISTRY .env.production || echo "IMAGE_REGISTRY=ghcr.io/the-airco-v2" >> .env.production
 grep -q IMAGE_TAG .env.production       || echo "IMAGE_TAG=latest"                      >> .env.production

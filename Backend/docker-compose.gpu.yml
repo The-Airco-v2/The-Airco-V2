@@ -51,9 +51,7 @@ services:
     image: ${IMAGE_REGISTRY:-ghcr.io/the-airco-v2}/airco-triton:${IMAGE_TAG:-latest}
     restart: unless-stopped
     pull_policy: always
-    ports:
-      - "127.0.0.1:8001:8001"
-      - "127.0.0.1:8002:8002"
+    network_mode: host
     deploy:
       resources:
         reservations:
@@ -72,13 +70,14 @@ services:
     image: ${IMAGE_REGISTRY:-ghcr.io/the-airco-v2}/airco-savant-pipeline:${IMAGE_TAG:-latest}
     restart: unless-stopped
     pull_policy: always
+    network_mode: host
     environment:
       <<: *shared-env
       ZMQ_SRC_ENDPOINT: router+bind:tcp://0.0.0.0:5000
       ZMQ_SINK_ENDPOINT: ""
       USE_SCRFD: ${USE_SCRFD:-true}
       SCRFD_ONNX_PATH: /models/scrfd/det_10g.onnx
-      TRITON_URL: triton:8001
+      TRITON_URL: 127.0.0.1:8001
     deploy:
       resources:
         reservations:
@@ -94,10 +93,11 @@ services:
     image: ${IMAGE_REGISTRY:-ghcr.io/the-airco-v2}/airco-savant-feeder:${IMAGE_TAG:-latest}
     restart: unless-stopped
     pull_policy: always
+    network_mode: host
     environment:
       <<: *shared-env
       GO2RTC_RTSP_BASE_URL: rtsp://${AIRCO_HUB_HOST}:8554
-      ZMQ_SRC_ENDPOINT: dealer+connect:tcp://savant-pipeline:5000
+      ZMQ_SRC_ENDPOINT: dealer+connect:tcp://127.0.0.1:5000
       FEEDER_FPS: ${FEEDER_FPS:-4}
     depends_on:
       - savant-pipeline
@@ -106,6 +106,7 @@ services:
     image: ${IMAGE_REGISTRY:-ghcr.io/the-airco-v2}/airco-session-control:${IMAGE_TAG:-latest}
     restart: unless-stopped
     pull_policy: always
+    network_mode: host
     environment:
       <<: *shared-env
       GO2RTC_URL: http://${AIRCO_HUB_HOST}:1984
@@ -120,6 +121,7 @@ services:
     image: ${IMAGE_REGISTRY:-ghcr.io/the-airco-v2}/airco-identity-consumer:${IMAGE_TAG:-latest}
     restart: unless-stopped
     pull_policy: always
+    network_mode: host
     environment:
       <<: *shared-env
     depends_on:
@@ -130,6 +132,7 @@ services:
     image: ${IMAGE_REGISTRY:-ghcr.io/the-airco-v2}/airco-analytics-consumer:${IMAGE_TAG:-latest}
     restart: unless-stopped
     pull_policy: always
+    network_mode: host
     environment:
       <<: *shared-env
 
@@ -137,6 +140,7 @@ services:
     image: ${IMAGE_REGISTRY:-ghcr.io/the-airco-v2}/airco-snapshot-consumer:${IMAGE_TAG:-latest}
     restart: unless-stopped
     pull_policy: always
+    network_mode: host
     environment:
       <<: *shared-env
 
@@ -144,6 +148,7 @@ services:
     image: ${IMAGE_REGISTRY:-ghcr.io/the-airco-v2}/airco-ws-publisher:${IMAGE_TAG:-latest}
     restart: unless-stopped
     pull_policy: always
+    network_mode: host
     environment:
       <<: *shared-env
 
@@ -151,6 +156,7 @@ services:
     image: ${IMAGE_REGISTRY:-ghcr.io/the-airco-v2}/airco-ultimate-adapter:${IMAGE_TAG:-latest}
     restart: unless-stopped
     pull_policy: always
+    network_mode: host
     environment:
       <<: *shared-env
       GO2RTC_RTSP_BASE_URL: rtsp://${AIRCO_HUB_HOST}:8554
