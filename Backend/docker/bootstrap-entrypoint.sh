@@ -127,6 +127,24 @@ echo "-----------------------"
 
 # ── 5. Start GPU stack via Podman ────────────────────────────────────────────
 echo "[5/5] Starting GPU stack via Podman..."
+
+# Diagnostic info — useful if Podman still fails
+echo "--- Podman diagnostics ---"
+echo "Podman version: $(podman --version 2>&1 || echo 'N/A')"
+echo "_CONTAINERS_USERNS_CONFIGURED=${_CONTAINERS_USERNS_CONFIGURED:-<unset>}"
+echo "PODMAN_USERNS=${PODMAN_USERNS:-<unset>}"
+echo "containers.conf:"
+cat /etc/containers/containers.conf 2>/dev/null || echo "(missing)"
+echo "storage.conf:"
+cat /etc/containers/storage.conf 2>/dev/null || echo "(missing)"
+echo "--------------------------"
+
+# Smoke-test: if 'podman info' fails, the rest won't work either
+if ! podman info >/dev/null 2>&1; then
+    echo "WARNING: 'podman info' failed — dumping full output:"
+    podman info 2>&1 || true
+fi
+
 echo "${GHCR_PAT}" | podman login ghcr.io -u nick2580 --password-stdin
 
 podman-compose -f docker-compose.gpu.yml --env-file .env.production pull

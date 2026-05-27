@@ -62,6 +62,17 @@ RUN mkdir -p /etc/containers && \
     echo '[storage.options]' >> /etc/containers/storage.conf && \
     echo 'ignore_chown_errors = "true"' >> /etc/containers/storage.conf
 
+# Tell Podman to use host namespaces instead of attempting clone/re-exec into
+# a child user namespace (which RunPod's unprivileged container kernel blocks).
+# This was unsafe on Podman 3.x (nil storage panic) but Podman 4.x rewrote
+# the storage engine to handle single-UID rootless mode gracefully.
+RUN printf '[containers]\nuserns = "host"\nnetns = "host"\nipcns = "host"\n' \
+      > /etc/containers/containers.conf
+
+# Prevent Podman from attempting user-namespace re-exec (the "cannot clone" fix)
+ENV _CONTAINERS_USERNS_CONFIGURED=done
+ENV PODMAN_USERNS=host
+
 # Install NVIDIA Container Toolkit
 RUN curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
       | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg && \
